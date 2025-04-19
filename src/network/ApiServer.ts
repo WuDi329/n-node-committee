@@ -83,14 +83,14 @@ export class ApiServer {
           `${this.committeeNode.getNodeId()}的APIServer接收到任务ID ${proof.taskId} 的QoS证明提交`
         );
 
-        // 提交到Committee节点处理
-        this.committeeNode.handleQoSProof(proof as QoSProof);
-
         // 响应客户端
         res.status(202).json({
           message: 'QoS proof accepted for processing',
           taskId: proof.taskId,
         });
+
+        // 提交到Committee节点处理
+        this.committeeNode.handleQoSProof(proof as QoSProof);
       } catch (error) {
         logger.error('处理QoS证明提交时出错:', error);
         res.status(500).json({
@@ -176,14 +176,14 @@ export class ApiServer {
           // 确保taskId一致性
           proof.taskId = taskId;
 
-          // 提交到Committee节点处理
-          this.committeeNode.handleSupplementaryProof(taskId, proof as QoSProof);
-
           // 响应客户端
           res.status(202).json({
             message: 'Supplementary QoS proof accepted for processing',
             taskId,
           });
+
+          // 提交到Committee节点处理
+          this.committeeNode.handleSupplementaryProof(taskId, proof as QoSProof);
         } catch (error) {
           logger.error(`处理补充QoS证明提交时出错: ${error}`);
           res.status(500).json({
