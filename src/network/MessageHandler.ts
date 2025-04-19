@@ -17,6 +17,8 @@ export class MessageHandler {
   private connections: Map<string, WebSocket> = new Map();
   private messageCallback: (message: PBFTMessage) => void;
   private supplementaryMessageCallback?: (message: SupplementaryMessage) => void;
+  private reconnectBackoffs: Map<string, number> = new Map();
+  private heartbeats: Map<string, NodeJS.Timeout> = new Map();
   private port: number;
 
   constructor(
@@ -103,87 +105,152 @@ export class MessageHandler {
     });
   }
 
-  // 连接到对等节点
-  private connectToPeers(): void {
-    if (!this.isRunning) {
-      return;
+  private connectToPeer(peerId: string, host: string, port: string, backoff: number = 1000): void {
+    if (!this.isRunning) return;
+    
+    try {
+      logger.info(`尝试连接到节点 ${peerId} (${host}:${port})`);
+      const ws = new WebSocket(`ws://${host}:${port}`);
+      
+      // 设置连接超时
+      const connectionTimeout = setTimeout(() => {
+        if (ws.readyState !== WebSocket.OPEN) {
+          logger.warn(`连接到节点 ${peerId} 超时`);
+          ws.terminate();
+        }
+      }, 10000); // 10秒连接超时
+      
+      ws.on('open', () => {
+        clearTimeout(connectionTimeout);
+        logger.info(`成功连接到节点 ${peerId} (${host}:${port})`);
+        this.connections.set(peerId, ws);
+        this.reconnectBackoffs.set(peerId, 1000); // 重置退避时间
+        
+        // 发送标识消息
+        const identMsg = { type: 'IDENT', nodeId: this.nodeId };
+        ws.send(JSON.stringify(identMsg));
+        
+        // 设置心跳
+        const heartbeatInterval = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            try {
+              const heartbeatMsg = { type: 'HEARTBEAT', nodeId: this.nodeId, timestamp: Date.now() };
+              ws.send(JSON.stringify(heartbeatMsg));
+            } catch (error) {
+              logger.error(`发送心跳到 ${peerId} 失败: ${error}`);
+              clearInterval(heartbeatInterval);
+              if (ws.readyState === WebSocket.OPEN) ws.close();
+            }
+          } else {
+            clearInterval(heartbeatInterval);
+          }
+        }, 30000); // 30秒心跳间隔
+        
+        this.heartbeats.set(peerId, heartbeatInterval);
+      });
+      
+      ws.on('message', data => {
+        try {
+          const message = JSON.parse(data.toString());
+          
+          if (message.type === 'IDENT') {
+            logger.info(`已识别连接的节点为 ${message.nodeId}`);
+            
+            // 确保节点ID匹配我们期望的peerId
+            if (message.nodeId !== peerId) {
+              logger.warn(`节点ID不匹配: 期望 ${peerId}, 收到 ${message.nodeId}`);
+              // 可以选择关闭连接或更新连接映射
+            }
+            
+            // 如果已经有该节点的连接，先关闭旧连接
+            const existingConn = this.connections.get(message.nodeId);
+            if (existingConn && existingConn !== ws) {
+              logger.warn(`检测到节点 ${message.nodeId} 的多个连接，关闭旧连接`);
+              existingConn.close();
+            }
+            
+            // 更新连接映射
+            this.connections.set(message.nodeId, ws);
+          } else if (message.type === 'HEARTBEAT') {
+            // 处理心跳消息 (可选: 记录最后收到的心跳时间)
+            logger.debug(`收到来自 ${peerId} 的心跳`);
+          } else if (message.type === 'DISCONNECT') {
+            logger.info(`对等节点 ${message.nodeId} 请求断开连接`);
+            ws.close();
+            this.connections.delete(message.nodeId);
+          } else if (message.type === 'SupplementaryReady' || message.type === 'SupplementaryAck') {
+            logger.debug(`收到来自 ${message.nodeId} 的补充证明消息: ${message.type}`);
+            if (this.supplementaryMessageCallback) {
+              this.supplementaryMessageCallback(message as SupplementaryMessage);
+            } else {
+              logger.warn(`节点 ${this.nodeId} 收到补充证明消息但未设置处理回调`);
+            }
+          } else {
+            // 处理常规PBFT消息
+            logger.debug(`收到来自 ${message.nodeId} 的消息类型: ${message.type}`);
+            this.messageCallback(message as PBFTMessage);
+          }
+        } catch (error) {
+          logger.error(`解析来自 ${peerId} 的消息失败: ${error}`);
+        }
+      });
+      
+      ws.on('close', () => {
+        clearTimeout(connectionTimeout);
+        logger.info(`与节点 ${peerId} 的连接已关闭`);
+        this.connections.delete(peerId);
+        
+        // 清理心跳
+        if (this.heartbeats.has(peerId)) {
+          clearInterval(this.heartbeats.get(peerId)!);
+          this.heartbeats.delete(peerId);
+        }
+        
+        if (this.isRunning) {
+          // 指数退避重连
+          const nextBackoff = Math.min(backoff * 1.5, 60000); // 最大60秒
+          logger.info(`将在 ${backoff}ms 后重连到 ${peerId}`);
+          setTimeout(() => {
+            this.connectToPeer(peerId, host, port, nextBackoff);
+          }, backoff);
+        }
+      });
+      
+      ws.on('error', (error) => {
+        logger.error(`与节点 ${peerId} 的连接发生错误: ${error.message}`);
+        // 错误处理由close事件处理重连
+      });
+    } catch (error) {
+      logger.error(`无法创建到节点 ${peerId} 的WebSocket连接: ${error}`);
+      
+      if (this.isRunning) {
+        const nextBackoff = Math.min(backoff * 1.5, 60000);
+        logger.info(`将在 ${backoff}ms 后重试连接到 ${peerId}`);
+        setTimeout(() => {
+          this.connectToPeer(peerId, host, port, nextBackoff);
+        }, backoff);
+      }
     }
+  }
+
+  private connectToPeers(): void {
+    if (!this.isRunning) return;
+    
+    logger.info(`尝试连接到 ${this.peers.length} 个对等节点`);
+    
     for (const peer of this.peers) {
       try {
         const parts = peer.split(':');
-        if (parts.length != 3) {
-          logger.warn(`无效的对等节点格式: ${peer}`);
+        if (parts.length !== 3) {
+          logger.warn(`无效的对等节点格式: ${peer}, 应为 'nodeId:host:port'`);
           continue;
         }
-
-        const peerId = parts[0];
-        const host = parts[1];
-        const port = parts[2];
-
-        const ws = new WebSocket(`ws://${host}:${port}`);
-
-        ws.on('open', () => {
-          logger.info(`${this.nodeId}已连接到对等节点 ${peerId}`);
-          this.connections.set(peerId, ws);
-
-          // 发送标识消息
-          const identMsg = {
-            type: 'IDENT',
-            nodeId: this.nodeId,
-          };
-          ws.send(JSON.stringify(identMsg));
-        });
-
-        ws.on('message', data => {
-          try {
-            const message = JSON.parse(data.toString());
-            if (message.type === 'IDENT') {
-              const nodeId = message.nodeId;
-              logger.info(`已识别连接的节点为 ${nodeId}`);
-
-              // 如果已经有该节点的连接，先关闭旧连接
-              const existingConn = this.connections.get(nodeId);
-              if (existingConn && existingConn !== ws) {
-                logger.warn(`检测到节点 ${nodeId} 的多个连接，关闭旧连接`);
-                existingConn.close();
-              }
-
-              // 存储新连接
-              this.connections.set(nodeId, ws);
-
-              // 保存节点ID和WebSocket的对应关系，用于close事件中识别
-              // ws.nodeId = nodeId;
-            } else if (message.type === 'DISCONNECT') {
-              logger.info(`对等节点 ${message.nodeId} 请求断开连接`);
-              ws.close();
-              this.connections.delete(message.nodeId);
-            } else {
-              this.messageCallback(message as PBFTMessage);
-            }
-          } catch (error) {
-            logger.error('解析消息失败:', error);
-          }
-        });
-
-        ws.on('close', () => {
-          logger.info(`与对等节点 ${peerId} 的连接已关闭`);
-          this.connections.delete(peerId);
-
-          if (this.isRunning) {
-            // 可以添加重连逻辑
-            setTimeout(() => {
-              logger.info(`尝试重新连接到 ${peerId}`);
-              this.connectToPeers();
-            }, 5000);
-          }
-        });
-
-        ws.on('error', error => {
-          logger.error(`${this.nodeId}与对等节点 ${peerId} 的WebSocket错误: ${error.message}`);
-          // 错误处理时不要关闭连接，让'close'事件处理
-        });
+        
+        const [peerId, host, port] = parts;
+        const backoff = this.reconnectBackoffs.get(peerId) || 1000;
+        this.connectToPeer(peerId, host, port, backoff);
       } catch (error) {
-        logger.error(`连接到对等节点失败: ${error}`);
+        logger.error(`解析对等节点信息失败: ${peer}, 错误: ${error}`);
       }
     }
   }
