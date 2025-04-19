@@ -90,7 +90,10 @@ export class ApiServer {
         });
 
         // 提交到Committee节点处理
-        this.committeeNode.handleQoSProof(proof as QoSProof);
+        // 提交到Committee节点处理，但不等待其完成
+        this.committeeNode.handleQoSProof(proof as QoSProof).catch(error => {
+          logger.error('处理QoS证明时出错:', error);
+        });
       } catch (error) {
         logger.error('处理QoS证明提交时出错:', error);
         res.status(500).json({
@@ -183,7 +186,10 @@ export class ApiServer {
           });
 
           // 提交到Committee节点处理
-          this.committeeNode.handleSupplementaryProof(taskId, proof as QoSProof);
+          // 提交到Committee节点处理，但不等待其完成
+          this.committeeNode.handleSupplementaryProof(taskId, proof as QoSProof).catch(error => {
+            logger.error(`处理补充QoS证明提交时出错: ${error}`);
+          });
         } catch (error) {
           logger.error(`处理补充QoS证明提交时出错: ${error}`);
           res.status(500).json({

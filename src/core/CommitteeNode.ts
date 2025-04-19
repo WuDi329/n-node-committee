@@ -370,167 +370,163 @@ export class CommitteeNode {
   }
 
   // 处理从Verifier收到的QoS证明
-  public handleQoSProof(proof: QoSProof): void {
-    const { taskId, verifierId, timestamp } = proof;
-    const now = new Date().toISOString();
+  // 处理从Verifier收到的QoS证明 - 异步版本
+  public async handleQoSProof(proof: QoSProof): Promise<void> {
+    // 返回一个Promise，包装原始处理逻辑
+    return new Promise<void>(resolve => {
+      // 使用setImmediate将处理逻辑放入下一个事件循环
+      setImmediate(async () => {
+        try {
+          const { taskId, verifierId, timestamp } = proof;
+          const now = new Date().toISOString();
+          const metricsCollector = GlobalMetricsCollector.getInstance();
 
-    // TODO: 验证任务是否存在于区块链上
-    // if (!this.verifyTaskExists(taskId)) {
-    //   logger.warn(`收到不存在任务的证明: taskId=${taskId}, verifier=${verifierId}`);
-    //   return; // 直接返回，不进行后续处理
-    // }
+          // 记录接收到QoSProof证明事件
+          metricsCollector.recordEvent({
+            taskId: proof.taskId,
+            nodeId: this.nodeId,
+            eventType: EventType.PROOF_RECEIVED,
+            timestamp: Date.now(),
+            metadata: { verifierId: proof.verifierId },
+          });
 
-    const metricsCollector = GlobalMetricsCollector.getInstance();
+          // 首先对每个证明进行快速验证
+          logger.info(`${this.nodeId}对任务${proof.taskId}执行快速验证`);
+          const validationResult = this.qosValidator.quickValidate(proof);
+          if (!validationResult.isValid) {
+            logger.warn(
+              `${this.nodeId}: 任务 ${taskId} 的QoS证明快速验证失败: ${JSON.stringify(validationResult.details)}`
+            );
+            // 验证失败仅忽略该证明，不影响任务状态
+            resolve(); // 即使验证失败也解析Promise
+            return;
+          }
 
-    // 记录接收到QoSProof证明事件
-    metricsCollector.recordEvent({
-      taskId: proof.taskId,
-      nodeId: this.nodeId,
-      eventType: EventType.PROOF_RECEIVED,
-      timestamp: Date.now(),
-      metadata: { verifierId: proof.verifierId },
-    });
+          // 获取或创建任务状态
+          let status = this.taskStatuses.get(taskId);
+          if (!status) {
+            status = {
+              taskId: taskId,
+              state: TaskProcessingState.Pending,
+              proofCount: 0,
+              verifierIds: [],
+              createdAt: now,
+              updatedAt: now,
+            };
+            logger.info(`${this.nodeId}创建新任务状态: ${taskId}`);
+          }
 
-    // 首先对每个证明进行快速验证
-    logger.info(`${this.nodeId}对任务${proof.taskId}执行快速验证`);
-    const validationResult = this.qosValidator.quickValidate(proof);
-    if (!validationResult.isValid) {
-      logger.warn(
-        `${this.nodeId}: 任务 ${taskId} 的QoS证明快速验证失败: ${JSON.stringify(validationResult.details)}`
-      );
-      // 验证失败仅忽略该证明，不影响任务状态
-      return;
-    }
+          // 检查当前verifier是否已经提交过这个证明
+          if (!status.verifierIds.includes(verifierId)) {
+            // 存储验证通过的QoS证明
+            this.storeProof(taskId, proof);
 
-    // 获取或创建任务状态
-    let status = this.taskStatuses.get(taskId);
-    if (!status) {
-      status = {
-        taskId: taskId,
-        state: TaskProcessingState.Pending,
-        proofCount: 0,
-        verifierIds: [],
-        createdAt: now,
-        updatedAt: now,
-      };
-      logger.info(`${this.nodeId}创建新任务状态: ${taskId}`);
-    }
+            // 更新任务状态
+            status.proofCount++;
+            status.verifierIds.push(verifierId);
+            status.updatedAt = now;
 
-    // 检查当前verifier是否已经提交过这个证明
-    if (!status.verifierIds.includes(verifierId)) {
-      // 存储验证通过的QoS证明
-      this.storeProof(taskId, proof);
-
-      // 更新任务状态
-      status.proofCount++;
-      status.verifierIds.push(verifierId);
-      status.updatedAt = now;
-
-      logger.info(
-        `${this.nodeId}: 任务 ${taskId} 收到来自 ${verifierId} 的QoS证明,当前共 ${status.proofCount} 个证明`
-      );
-
-      // 处理Leader节点的验证和共识逻辑
-      if (this.isLeader) {
-        // 第一个证明到达时，更新状态为Validating
-        if (status.state === TaskProcessingState.Pending) {
-          status.state = TaskProcessingState.Validating;
-        }
-
-        // 收集到足够的证明(>=2)时启动共识
-        if (status.proofCount >= 2 && status.state !== TaskProcessingState.Consensus) {
-          // 获取所有证明
-          const proofs = this.getProofsForTask(taskId);
-
-          // 验证是否有足够的有效证明启动共识
-          if (proofs.length >= 2) {
             logger.info(
-              `Leader: 任务 ${taskId} 已收集足够证明(${proofs.length}个)，准备启动共识流程`
+              `${this.nodeId}: 任务 ${taskId} 收到来自 ${verifierId} 的QoS证明,当前共 ${status.proofCount} 个证明`
             );
 
-            // 使用深度验证确定共识类型
-            let consensusType = ConsensusType.Normal;
-            const deepValidationResult = this.qosValidator.deepValidate(proofs);
-            if (
-              deepValidationResult &&
-              !deepValidationResult.isValid &&
-              deepValidationResult.hasConflict
-            ) {
-              // 分析冲突类型
-              deepValidationResult.conflictType =
-                this.qosValidator.analyzeConflictType(deepValidationResult);
-              logger.info(
-                `Leader: 任务 ${taskId} 的证明深度验证不通过，冲突类型: ${deepValidationResult.conflictType}, 详情: ${JSON.stringify(deepValidationResult.details)}`
-              );
-
-              metricsCollector.recordValidationEvent({
-                taskId: proof.taskId,
-                nodeId: this.nodeId,
-                eventType: EventType.PROOF_CONFLICT,
-                timestamp: Date.now(),
-                metadata: { verifierId: proof.verifierId },
-                validationResult: deepValidationResult,
-              });
-
-              // TODO: 在特定条件下才将任务标记为REJECTED
-              // 例如: 1. 深度验证完全失败（所有证明都互相矛盾）
-              //      2. 在某个超时时间内没有收集到足够数量的有效证明
-              // 目前仅启动冲突共识，而非拒绝整个任务
-              consensusType = ConsensusType.Conflict;
-              status.state = TaskProcessingState.Conflict;
-              if (!status.validationInfo) {
-                status.validationInfo = {};
+            // 处理Leader节点的验证和共识逻辑
+            if (this.isLeader) {
+              // 第一个证明到达时，更新状态为Validating
+              if (status.state === TaskProcessingState.Pending) {
+                status.state = TaskProcessingState.Validating;
               }
 
-              // 将冲突类型存储在任务状态中，用于后续处理
-              status.validationInfo.conflictType = deepValidationResult.conflictType;
-              status.validationInfo.conflictDetails = deepValidationResult.details;
+              // 收集到足够的证明(>=2)时启动共识
+              if (status.proofCount >= 2 && status.state !== TaskProcessingState.Consensus) {
+                // 获取所有证明
+                const proofs = this.getProofsForTask(taskId);
+
+                // 验证是否有足够的有效证明启动共识
+                if (proofs.length >= 2) {
+                  logger.info(
+                    `Leader: 任务 ${taskId} 已收集足够证明(${proofs.length}个)，准备启动共识流程`
+                  );
+
+                  // 使用深度验证确定共识类型
+                  let consensusType = ConsensusType.Normal;
+                  const deepValidationResult = this.qosValidator.deepValidate(proofs);
+                  if (
+                    deepValidationResult &&
+                    !deepValidationResult.isValid &&
+                    deepValidationResult.hasConflict
+                  ) {
+                    // 分析冲突类型
+                    deepValidationResult.conflictType =
+                      this.qosValidator.analyzeConflictType(deepValidationResult);
+                    logger.info(
+                      `Leader: 任务 ${taskId} 的证明深度验证不通过，冲突类型: ${deepValidationResult.conflictType}, 详情: ${JSON.stringify(deepValidationResult.details)}`
+                    );
+
+                    metricsCollector.recordValidationEvent({
+                      taskId: proof.taskId,
+                      nodeId: this.nodeId,
+                      eventType: EventType.PROOF_CONFLICT,
+                      timestamp: Date.now(),
+                      metadata: { verifierId: proof.verifierId },
+                      validationResult: deepValidationResult,
+                    });
+
+                    consensusType = ConsensusType.Conflict;
+                    status.state = TaskProcessingState.Conflict;
+                    if (!status.validationInfo) {
+                      status.validationInfo = {};
+                    }
+
+                    // 将冲突类型存储在任务状态中，用于后续处理
+                    status.validationInfo.conflictType = deepValidationResult.conflictType;
+                    status.validationInfo.conflictDetails = deepValidationResult.details;
+                  } else {
+                    metricsCollector.recordValidationEvent({
+                      taskId: proof.taskId,
+                      nodeId: this.nodeId,
+                      eventType: EventType.PROOF_VALIDATED,
+                      timestamp: Date.now(),
+                      metadata: { verifierId: proof.verifierId },
+                      validationResult: deepValidationResult,
+                    });
+                  }
+
+                  // 更新任务状态为Consensus
+                  status.state = TaskProcessingState.Consensus;
+                  this.taskStatuses.set(taskId, status);
+
+                  logger.info(`任务 ${taskId} 已加入共识队列`);
+
+                  // 将任务加入共识队列 - 注意这里可能需要改造为异步
+                  await this.enqueueConsensusTask(taskId, proofs[0], consensusType);
+                }
+              }
             } else {
-              metricsCollector.recordValidationEvent({
-                taskId: proof.taskId,
-                nodeId: this.nodeId,
-                eventType: EventType.PROOF_VALIDATED,
-                timestamp: Date.now(),
-                metadata: { verifierId: proof.verifierId },
-                validationResult: deepValidationResult,
-              });
+              // 非Leader节点只负责收集证明和更新状态
+              if (status.state === TaskProcessingState.Pending) {
+                status.state = TaskProcessingState.Validating;
+              }
+
+              // 检查是否有待处理的PrePrepare消息需要处理
+              await this.checkPendingPrePrepareMessages(taskId);
             }
-
-            // 更新任务状态为Consensus
-            status.state = TaskProcessingState.Consensus;
-            this.taskStatuses.set(taskId, status);
-
-            // const originalProofs = this.getProofsForTask(taskId);
-            // console.log('inside 任务入队之前');
-            // logger.info(`${this.nodeId}视角`);
-            // console.log(originalProofs);
-
-            logger.info(`任务 ${taskId} 已加入共识队列`);
-
-            // 将任务加入共识队列
-            this.enqueueConsensusTask(taskId, proofs[0], consensusType);
-
-            // const originalProofs2 = this.getProofsForTask(taskId);
-            // console.log('inside 任务入队之后');
-            // logger.info(`${this.nodeId}视角`);
-            // console.log(originalProofs2);
+          } else {
+            logger.info(`任务 ${taskId} 已经收到来自 ${verifierId} 的重复QoS证明，已忽略`);
           }
-        }
-      } else {
-        // 非Leader节点只负责收集证明和更新状态
-        if (status.state === TaskProcessingState.Pending) {
-          status.state = TaskProcessingState.Validating;
-        }
 
-        // 检查是否有待处理的PrePrepare消息需要处理
-        this.checkPendingPrePrepareMessages(taskId);
-      }
-    } else {
-      logger.info(`任务 ${taskId} 已经收到来自 ${verifierId} 的重复QoS证明，已忽略`);
-    }
+          // 更新任务状态
+          this.taskStatuses.set(taskId, status);
 
-    // 更新任务状态
-    this.taskStatuses.set(taskId, status);
+          // 成功完成处理
+          resolve();
+        } catch (error) {
+          // 记录错误但不中断处理流程
+          logger.error(`处理QoS证明时出错: ${error}`);
+          resolve(); // 即使出错也解析Promise，避免挂起
+        }
+      });
+    });
   }
 
   private checkPendingSupplementalPrepareMessages(taskId: string): void {
@@ -1061,232 +1057,248 @@ export class CommitteeNode {
   //   return 'leader'; // 默认值
   // }
 
-  public handleSupplementaryProof(taskId: string, proof: QoSProof): void {
-    // 验证任务状态是否为"等待补充验证"
-    const status = this.taskStatuses.get(taskId);
-    if (!status || status.state !== TaskProcessingState.AwaitingSupplementary) {
-      logger.warn(`无法处理补充证明：任务 ${taskId} 不在等待补充验证状态`);
-      return;
-    }
-
-    // 确认已有足够的原始证明
-    const originalProofs = this.getProofsForTask(taskId);
-    // logger.info(`inside handleSupplementaryProof`);
-    logger.info(`进入${this.nodeId}视角的handleSupplementaryProof`);
-    // console.log(originalProofs);
-
-    if (originalProofs.length < 2) {
-      logger.warn(`无法处理补充证明：任务 ${taskId} 的原始证明不足`);
-      return;
-    }
-
-    // 对补充证明进行快速验证
-    const validationResult = this.qosValidator.quickValidate(proof);
-    if (!validationResult.isValid) {
-      logger.warn(`补充证明快速验证失败: ${JSON.stringify(validationResult.details)}`);
-      // 更新任务状态为Failed，而不是简单返回
-      status.state = TaskProcessingState.Failed;
-      status.updatedAt = new Date().toISOString();
-
-      if (!status.validationInfo) {
-        status.validationInfo = {};
-      }
-      status.validationInfo.supplementaryResult = {
-        isValid: false,
-        details: validationResult.details,
-      };
-
-      this.taskStatuses.set(taskId, status);
-      return;
-    }
-
-    // 确保补充证明有唯一ID
-    if (!proof.id) {
-      proof.id = `supplementary-${taskId}-${Date.now()}`;
-    }
-
-    // 将补充证明存储到系统中
-    this.storeProof(taskId, proof);
-    status.proofCount++;
-    status.verifierIds.push(proof.verifierId);
-    status.updatedAt = new Date().toISOString();
-
-    // 专门记录补充验证者ID
-    if (!status.supplementaryVerifierIds) {
-      status.supplementaryVerifierIds = [];
-    }
-    status.supplementaryVerifierIds.push(proof.verifierId);
-
-    // 获取保存的冲突信息
-    const conflictType = status.validationInfo?.conflictType || 'structural';
-    const initialResult = {
-      isValid: false,
-      hasConflict: true,
-      conflictType: conflictType,
-      details: status.validationInfo?.conflictDetails,
-    };
-
-    try {
-      // 使用补充证明尝试解决之前发现的冲突
-      // console.log(initialResult);
-      const resolvedResult = this.qosValidator.resolveWithSupplementaryProof(
-        originalProofs,
-        proof,
-        initialResult
-      );
-
-      logger.info(
-        `${this.nodeId}视角下:任务 ${taskId} 的补充验证结果: ${JSON.stringify(resolvedResult)}`
-      );
-
-      // 确保 validationInfo 对象存在
-      if (!status.validationInfo) {
-        status.validationInfo = {};
-      }
-      status.validationInfo.resolvedResult = resolvedResult;
-
-      // 更新任务状态
-      // 如果解决成功：状态更新为"已验证"(Validated)【这一步还没有到isLeader所以只要经过resolveWithSupplementaryProof并成功，就是iValidate】
-      if (resolvedResult.isValid) {
-        status.state = TaskProcessingState.Validated;
-        logger.info(`任务 ${taskId} 通过补充验证已解决冲突`);
-
-        // 启动最终共识流程前，只有Leader能通知所有节点补充证明就绪
-        if (this.isLeader) {
-          // 获取所有证明（包括补充证明）
-          const allProofs = this.getProofsForTask(taskId);
-
-          // 准备最终共识数据
-          const consensusData = {
-            ...allProofs[0],
-            supplementaryInfo: resolvedResult,
-          };
-
-          // console.log('inside resolvedResult isValid, resolvedResult是');
-          // console.log(resolvedResult);
-
-          // 存储等待共识的数据
-          this.pendingSupplementaryConsensus.set(taskId, consensusData);
-
-          // 广播补充证明就绪消息
-          const readyMessage: SupplementaryReadyMessage = {
-            type: 'SupplementaryReady',
-            taskId,
-            supplementaryProofId: proof.id,
-            nodeId: this.nodeId,
-            timestamp: Date.now(),
-            signature: sign(
-              {
-                type: 'SupplementaryReady',
-                taskId,
-                supplementaryProofId: proof.id,
-                timestamp: Date.now(),
-              },
-              'private_key'
-            ), // 使用私钥签名
-          };
-
-          // 广播就绪消息
-          this.messageHandler.broadcastSupplementaryReady(readyMessage);
-          logger.info(`Leader ${this.nodeId} 已广播任务 ${taskId} 的补充证明就绪消息`);
-
-          // 初始化就绪状态跟踪
-          if (!this.supplementaryReadyStatus.has(taskId)) {
-            this.supplementaryReadyStatus.set(taskId, new Set<string>());
+  public async handleSupplementaryProof(taskId: string, proof: QoSProof): Promise<void> {
+    // 返回一个Promise，包装原始处理逻辑
+    return new Promise<void>(resolve => {
+      // 使用setImmediate将处理逻辑放入下一个事件循环
+      setImmediate(async () => {
+        try {
+          // 验证任务状态是否为"等待补充验证"
+          const status = this.taskStatuses.get(taskId);
+          if (!status || status.state !== TaskProcessingState.AwaitingSupplementary) {
+            logger.warn(`无法处理补充证明：任务 ${taskId} 不在等待补充验证状态`);
+            resolve(); // 即使验证失败也解析Promise
+            return;
           }
-          // Leader自己标记为就绪
-          this.supplementaryReadyStatus.get(taskId)!.add(this.nodeId);
-        }
-        // 如果是follower并收到了补充证明，直接更新状态为已验证
-        else {
-          logger.info(`Follower ${this.nodeId} 已处理任务 ${taskId} 的补充证明`);
-          status.state = TaskProcessingState.Validated;
-          this.taskStatuses.set(taskId, status);
 
-          const pendingFinalPrePrepare = this.pendingFinalPrePrepareMessages.get(taskId);
+          // 确认已有足够的原始证明
+          const originalProofs = this.getProofsForTask(taskId);
+          logger.info(`进入${this.nodeId}视角的handleSupplementaryProof`);
 
-          if (pendingFinalPrePrepare) {
-            logger.info(`节点 ${this.nodeId} 开始处理之前延迟的最终共识PrePrepare消息`);
+          if (originalProofs.length < 2) {
+            logger.warn(`无法处理补充证明：任务 ${taskId} 的原始证明不足`);
+            resolve();
+            return;
+          }
 
-            // 移除待处理消息
-            this.pendingFinalPrePrepareMessages.delete(taskId);
+          // 对补充证明进行快速验证
+          const validationResult = this.qosValidator.quickValidate(proof);
+          if (!validationResult.isValid) {
+            logger.warn(`补充证明快速验证失败: ${JSON.stringify(validationResult.details)}`);
+            // 更新任务状态为Failed，而不是简单返回
+            status.state = TaskProcessingState.Failed;
+            status.updatedAt = new Date().toISOString();
 
-            // 现在可以处理这个PrePrepare消息了
-            const response = this.processPrePrepareMessage(pendingFinalPrePrepare);
-            if (response) {
-              this.messageHandler.broadcast(response);
-
-              // 处理自己的Prepare消息
-              const selfPrepareMsg = { ...response };
-              const commitMsg = this.pbftEngine.handlePrepare(selfPrepareMsg as PBFTMessage);
-
-              if (commitMsg) {
-                this.messageHandler.broadcast(commitMsg);
-
-                // 处理自己的Commit消息
-                const selfCommitMsg = { ...commitMsg };
-                this.pbftEngine.handleCommit(selfCommitMsg);
-              }
+            if (!status.validationInfo) {
+              status.validationInfo = {};
             }
-          } else {
-            // 主动向leader发送确认消息
-            const ackMessage: SupplementaryAckMessage = {
-              type: 'SupplementaryAck',
-              taskId,
-              supplementaryProofId: proof.id,
-              nodeId: this.nodeId,
-              timestamp: Date.now(),
-              signature: sign(
-                {
-                  type: 'SupplementaryAck',
-                  taskId,
-                  supplementaryProofId: proof.id,
-                  timestamp: Date.now(),
-                },
-                'private_key'
-              ), // 使用私钥签名
+            status.validationInfo.supplementaryResult = {
+              isValid: false,
+              details: validationResult.details,
             };
 
-            // 查找leader节点
-            const leaderNodeId = 'leader'; // 假设leader节点ID为'leader'，实际环境中可能需要动态获取
-
-            // 向leader发送确认消息
-            try {
-              this.messageHandler.sendSupplementaryAck(leaderNodeId, ackMessage);
-              logger.info(
-                `Follower ${this.nodeId} 已主动向leader确认补充证明处理完成，任务ID: ${taskId}`
-              );
-            } catch (error) {
-              const errorMessage = error instanceof Error ? error.message : String(error);
-              logger.error(`Follower ${this.nodeId} 向leader发送确认消息失败: ${errorMessage}`);
-            }
+            this.taskStatuses.set(taskId, status);
+            resolve();
+            return;
           }
+
+          // 确保补充证明有唯一ID
+          if (!proof.id) {
+            proof.id = `supplementary-${taskId}-${Date.now()}`;
+          }
+
+          // 将补充证明存储到系统中
+          this.storeProof(taskId, proof);
+          status.proofCount++;
+          status.verifierIds.push(proof.verifierId);
+          status.updatedAt = new Date().toISOString();
+
+          // 专门记录补充验证者ID
+          if (!status.supplementaryVerifierIds) {
+            status.supplementaryVerifierIds = [];
+          }
+          status.supplementaryVerifierIds.push(proof.verifierId);
+
+          // 获取保存的冲突信息
+          const conflictType = status.validationInfo?.conflictType || 'structural';
+          const initialResult = {
+            isValid: false,
+            hasConflict: true,
+            conflictType: conflictType,
+            details: status.validationInfo?.conflictDetails,
+          };
+
+          try {
+            // 使用补充证明尝试解决之前发现的冲突
+            const resolvedResult = this.qosValidator.resolveWithSupplementaryProof(
+              originalProofs,
+              proof,
+              initialResult
+            );
+
+            logger.info(
+              `${this.nodeId}视角下:任务 ${taskId} 的补充验证结果: ${JSON.stringify(resolvedResult)}`
+            );
+
+            // 确保 validationInfo 对象存在
+            if (!status.validationInfo) {
+              status.validationInfo = {};
+            }
+            status.validationInfo.resolvedResult = resolvedResult;
+
+            // 更新任务状态
+            if (resolvedResult.isValid) {
+              status.state = TaskProcessingState.Validated;
+              logger.info(`任务 ${taskId} 通过补充验证已解决冲突`);
+
+              // 启动最终共识流程前，只有Leader能通知所有节点补充证明就绪
+              if (this.isLeader) {
+                // 获取所有证明（包括补充证明）
+                const allProofs = this.getProofsForTask(taskId);
+
+                // 准备最终共识数据
+                const consensusData = {
+                  ...allProofs[0],
+                  supplementaryInfo: resolvedResult,
+                };
+
+                // 存储等待共识的数据
+                this.pendingSupplementaryConsensus.set(taskId, consensusData);
+
+                // 广播补充证明就绪消息
+                const readyMessage: SupplementaryReadyMessage = {
+                  type: 'SupplementaryReady',
+                  taskId,
+                  supplementaryProofId: proof.id,
+                  nodeId: this.nodeId,
+                  timestamp: Date.now(),
+                  signature: sign(
+                    {
+                      type: 'SupplementaryReady',
+                      taskId,
+                      supplementaryProofId: proof.id,
+                      timestamp: Date.now(),
+                    },
+                    'private_key'
+                  ), // 使用私钥签名
+                };
+
+                // 广播就绪消息 - 注意这里可能需要改造为异步
+                await this.messageHandler.broadcastSupplementaryReady(readyMessage);
+                logger.info(`Leader ${this.nodeId} 已广播任务 ${taskId} 的补充证明就绪消息`);
+
+                // 初始化就绪状态跟踪
+                if (!this.supplementaryReadyStatus.has(taskId)) {
+                  this.supplementaryReadyStatus.set(taskId, new Set<string>());
+                }
+                // Leader自己标记为就绪
+                this.supplementaryReadyStatus.get(taskId)!.add(this.nodeId);
+              }
+              // 如果是follower并收到了补充证明，直接更新状态为已验证
+              else {
+                logger.info(`Follower ${this.nodeId} 已处理任务 ${taskId} 的补充证明`);
+                status.state = TaskProcessingState.Validated;
+                this.taskStatuses.set(taskId, status);
+
+                const pendingFinalPrePrepare = this.pendingFinalPrePrepareMessages.get(taskId);
+
+                if (pendingFinalPrePrepare) {
+                  logger.info(`节点 ${this.nodeId} 开始处理之前延迟的最终共识PrePrepare消息`);
+
+                  // 移除待处理消息
+                  this.pendingFinalPrePrepareMessages.delete(taskId);
+
+                  // 现在可以处理这个PrePrepare消息了
+                  const response = await this.processPrePrepareMessage(pendingFinalPrePrepare);
+                  if (response) {
+                    await this.messageHandler.broadcast(response);
+
+                    // 处理自己的Prepare消息
+                    const selfPrepareMsg = { ...response };
+                    const commitMsg = await this.pbftEngine.handlePrepare(
+                      selfPrepareMsg as PBFTMessage
+                    );
+
+                    if (commitMsg) {
+                      await this.messageHandler.broadcast(commitMsg);
+
+                      // 处理自己的Commit消息
+                      const selfCommitMsg = { ...commitMsg };
+                      await this.pbftEngine.handleCommit(selfCommitMsg);
+                    }
+                  }
+                } else {
+                  // 主动向leader发送确认消息
+                  const ackMessage: SupplementaryAckMessage = {
+                    type: 'SupplementaryAck',
+                    taskId,
+                    supplementaryProofId: proof.id,
+                    nodeId: this.nodeId,
+                    timestamp: Date.now(),
+                    signature: sign(
+                      {
+                        type: 'SupplementaryAck',
+                        taskId,
+                        supplementaryProofId: proof.id,
+                        timestamp: Date.now(),
+                      },
+                      'private_key'
+                    ), // 使用私钥签名
+                  };
+
+                  // 查找leader节点
+                  const leaderNodeId = 'leader'; // 假设leader节点ID为'leader'，实际环境中可能需要动态获取
+
+                  // 向leader发送确认消息
+                  try {
+                    await this.messageHandler.sendSupplementaryAck(leaderNodeId, ackMessage);
+                    logger.info(
+                      `Follower ${this.nodeId} 已主动向leader确认补充证明处理完成，任务ID: ${taskId}`
+                    );
+                  } catch (error) {
+                    const errorMessage = error instanceof Error ? error.message : String(error);
+                    logger.error(
+                      `Follower ${this.nodeId} 向leader发送确认消息失败: ${errorMessage}`
+                    );
+                  }
+                }
+              }
+            } else if (resolvedResult.needsManualReview) {
+              // 如果需要人工审核：状态更新为"需要人工审核"
+              status.state = TaskProcessingState.NeedsManualReview;
+              logger.warn(`任务 ${taskId} 需要人工审核: ${resolvedResult.details?.reason}`);
+            } else {
+              // 如果解决失败：状态更新为"失败"
+              status.state = TaskProcessingState.Failed;
+              logger.error(`任务 ${taskId} 补充验证失败: ${resolvedResult.details?.reason}`);
+            }
+
+            // 无论如何都更新任务状态
+            this.taskStatuses.set(taskId, status);
+          } catch (error) {
+            // 处理解决冲突过程中的异常
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            logger.error(`解决冲突过程出错: ${errorMessage}`);
+            status.state = TaskProcessingState.Failed;
+
+            if (!status.validationInfo) {
+              status.validationInfo = {};
+            }
+            status.validationInfo.errorMessage = errorMessage;
+
+            this.taskStatuses.set(taskId, status);
+          }
+
+          // 成功完成处理
+          resolve();
+        } catch (error) {
+          // 记录错误但不中断处理流程
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          logger.error(`处理补充证明时出错: ${errorMessage}`);
+          resolve(); // 即使出错也解析Promise，避免挂起
         }
-      } else if (resolvedResult.needsManualReview) {
-        // 如果需要人工审核：状态更新为"需要人工审核"
-        status.state = TaskProcessingState.NeedsManualReview;
-        logger.warn(`任务 ${taskId} 需要人工审核: ${resolvedResult.details?.reason}`);
-      } else {
-        // 如果解决失败：状态更新为"失败"
-        status.state = TaskProcessingState.Failed;
-        logger.error(`任务 ${taskId} 补充验证失败: ${resolvedResult.details?.reason}`);
-      }
-
-      // 无论如何都更新任务状态
-      this.taskStatuses.set(taskId, status);
-    } catch (error) {
-      // 处理解决冲突过程中的异常
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      logger.error(`解决冲突过程出错: ${errorMessage}`);
-      status.state = TaskProcessingState.Failed;
-
-      if (!status.validationInfo) {
-        status.validationInfo = {};
-      }
-      status.validationInfo.errorMessage = errorMessage;
-
-      this.taskStatuses.set(taskId, status);
-    }
+      });
+    });
   }
 
   public updateTaskState(
