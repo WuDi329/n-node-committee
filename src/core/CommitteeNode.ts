@@ -12,6 +12,10 @@ import {
   SupplementaryReadyMessage,
   SupplementaryAckMessage,
   EventType,
+  GopScore,
+  TaskData,
+  QosProofStatus,
+  ConsensusQosProof,
 } from '../models/types';
 import { logger } from '../utils/logger';
 import { calculateHash, sign } from '../utils/crypto';
@@ -775,34 +779,34 @@ export class CommitteeNode {
   }
 
   // 处理冲突共识达成后的操作
-  private handleConflictConsensusReached(taskId: string): void {
-    const status = this.taskStatuses.get(taskId);
-    if (!status) {
-      logger.warn(`无法处理冲突共识：任务 ${taskId} 无状态`);
-      return;
-    }
+  // private handleConflictConsensusReached(taskId: string): void {
+  //   const status = this.taskStatuses.get(taskId);
+  //   if (!status) {
+  //     logger.warn(`无法处理冲突共识：任务 ${taskId} 无状态`);
+  //     return;
+  //   }
 
-    const metricsCollector = GlobalMetricsCollector.getInstance();
-    metricsCollector.recordConsensusEvent({
-      taskId: taskId,
-      nodeId: this.nodeId,
-      eventType: EventType.CONSENSUS_REACH_CONFLICT,
-      timestamp: Date.now(),
-      // ConsensusResult 到底应该是啥等待填补
-      ConsensusResult: {},
-      // metadata: { verifierId: proof.verifierId },
-    });
+  //   const metricsCollector = GlobalMetricsCollector.getInstance();
+  //   metricsCollector.recordConsensusEvent({
+  //     taskId: taskId,
+  //     nodeId: this.nodeId,
+  //     eventType: EventType.CONSENSUS_REACH_CONFLICT,
+  //     timestamp: Date.now(),
+  //     // ConsensusResult 到底应该是啥等待填补
+  //     ConsensusResult: {},
+  //     // metadata: { verifierId: proof.verifierId },
+  //   });
 
-    // 更新任务状态为等待补充验证
-    status.state = TaskProcessingState.AwaitingSupplementary;
-    status.updatedAt = new Date().toISOString();
-    this.taskStatuses.set(taskId, status);
+  //   // 更新任务状态为等待补充验证
+  //   status.state = TaskProcessingState.AwaitingSupplementary;
+  //   status.updatedAt = new Date().toISOString();
+  //   this.taskStatuses.set(taskId, status);
 
-    logger.info(`${this.nodeId}视角下，任务 ${taskId} 进入等待补充验证状态`);
+  //   logger.info(`${this.nodeId}视角下，任务 ${taskId} 进入等待补充验证状态`);
 
-    // 请求补充验证
-    this.requestSupplementaryValidation(taskId);
-  }
+  //   // 请求补充验证
+  //   this.requestSupplementaryValidation(taskId);
+  // }
 
   // for test to design
   public forceCheckTimeout(taskId: string): void {
@@ -1359,7 +1363,9 @@ export class CommitteeNode {
   // 获取音频评分的辅助方法
   private getAverageAudioScore(taskId: string): number {
     const proofs = this.getProofsForTask(taskId);
-    const scores = proofs.map(p => p.audioScore || 0).filter(s => s > 0);
+    const scores = proofs
+      .filter(p => p.audioQualityData && typeof p.audioQualityData.overallScore === 'number')
+      .map(p => p.audioQualityData.overallScore);
 
     if (scores.length === 0) {
       return 0;
@@ -1369,21 +1375,92 @@ export class CommitteeNode {
   }
 
   // 获取GOP验证结果的辅助方法
+  // 获取GOP验证结果的辅助方法
   private getVerificationResults(taskId: string): any {
     const proofs = this.getProofsForTask(taskId);
 
-    // 这里需要根据你的项目实际数据结构来实现
-    // 以下是一个简化的示例
-    const gopScores = proofs[0]?.gopScores || [];
-    const verification = 'Verified'; // 默认值，实际应该根据验证结果确定
+    if (proofs.length === 0 || !proofs[0].videoQualityData) {
+      return { gopScores: [], verification: 'Unknown' };
+    }
+
+    // 从第一个证明中提取GOP分数
+    const firstProof = proofs[0];
+    let gopScores: GopScore[] = [];
+
+    if (firstProof.videoQualityData && firstProof.videoQualityData.gopScores) {
+      // 转换GOP分数格式以符合合约要求
+      gopScores = Object.entries(firstProof.videoQualityData.gopScores).map(
+        ([timestamp, score]) => {
+          return {
+            timestamp: timestamp,
+            vmaf_score: parseFloat(score as string),
+            hash: '', // 如果有hash值，应该从证明中提取
+          };
+        }
+      );
+    }
+
+    // 确定验证结果
+    // 默认为已验证
+    let verification = 'Verified';
+
+    // 检查是否所有证明的GOP评分一致
+    if (proofs.length > 1) {
+      const allGopScoresMatch = this.compareGopScores(proofs);
+      if (!allGopScoresMatch) {
+        verification = 'GopMismatch';
+      }
+    }
 
     return { gopScores, verification };
+  }
+
+  // 比较多个证明的GOP分数是否一致
+  private compareGopScores(proofs: QoSProof[]): boolean {
+    if (proofs.length <= 1) {
+      return true;
+    }
+
+    // 获取第一个证明的GOP分数
+    const firstGopScores = proofs[0].videoQualityData?.gopScores || {};
+    const firstTimestamps = Object.keys(firstGopScores).sort();
+
+    // 与其他证明比较
+    for (let i = 1; i < proofs.length; i++) {
+      const currentGopScores = proofs[i].videoQualityData?.gopScores || {};
+      const currentTimestamps = Object.keys(currentGopScores).sort();
+
+      // 比较时间戳数量
+      if (firstTimestamps.length !== currentTimestamps.length) {
+        return false;
+      }
+
+      // 比较每个时间戳的评分
+      for (const timestamp of firstTimestamps) {
+        if (!currentGopScores[timestamp]) {
+          return false;
+        }
+
+        // 允许一定的分数差异(例如1%)
+        const firstScore = parseFloat(firstGopScores[timestamp] as string);
+        const currentScore = parseFloat(currentGopScores[timestamp] as string);
+        const difference = Math.abs(firstScore - currentScore);
+
+        if (difference > firstScore * 0.01) {
+          return false;
+        }
+      }
+    }
+
+    return true;
   }
 
   // 获取同步评分的辅助方法
   private getAverageSyncScore(taskId: string): number {
     const proofs = this.getProofsForTask(taskId);
-    const scores = proofs.map(p => p.syncScore || 0);
+    const scores = proofs
+      .filter(p => p.syncQualityData && typeof p.syncQualityData.overallScore === 'number')
+      .map(p => p.syncQualityData.overallScore);
 
     if (scores.length === 0) {
       return 0;
@@ -1395,7 +1472,7 @@ export class CommitteeNode {
   // 获取视频评分的辅助方法
   private getVideoScores(taskId: string): { average: number; scores: number[] } {
     const proofs = this.getProofsForTask(taskId);
-    const scores = proofs.map(p => p.videoScore || 0).filter(s => s > 0);
+    const scores = proofs.map(p => p.videoQualityData?.overallScore || 0).filter(s => s > 0);
 
     if (scores.length === 0) {
       return { average: 0, scores: [] };
@@ -1411,20 +1488,13 @@ export class CommitteeNode {
     proof: QoSProof,
     task: TaskData
   ): ConsensusQosProof {
-    // 获取参与共识的委员会成员
-    const committeeMembers = this.pbftEngine.getParticipatingNodes().map(nodeId => {
-      // 注意：这里需要将节点ID映射到实际的NEAR账户ID
-      // 这个映射关系需要根据你的项目配置来实现
-      return nodeId;
-    });
-
     const videoScores = this.getVideoScores(taskId);
     const gopsResults = this.getVerificationResults(taskId);
 
     return {
       task_id: taskId,
       worker_id: task.assigned_worker!,
-      committee_members: committeeMembers,
+      // committee_members: committeeMembers,
       committee_leader: this.nodeId,
       timestamp: Date.now(),
 
@@ -1433,10 +1503,10 @@ export class CommitteeNode {
       audio_score: this.getAverageAudioScore(taskId),
       sync_score: this.getAverageSyncScore(taskId),
 
-      encoding_start_time: proof.encodingStartTime || 0,
-      encoding_end_time: proof.encodingEndTime || 0,
-      video_specs: proof.videoSpecs,
-      frame_count: proof.frameCount || 0,
+      encoding_start_time: task.assignment_time || 0,
+      encoding_end_time: task.completion_time || 0,
+      video_specs: proof.mediaSpecs,
+      frame_count: task.frame_count || 0,
 
       specified_gop_scores: gopsResults.gopScores,
       gop_verification: gopsResults.verification,
@@ -1484,7 +1554,7 @@ export class CommitteeNode {
   }
 
   // 共识达成后的回调
-  private onConsensusReached(proof: QoSProof, consensusType: ConsensusType): void {
+  private async onConsensusReached(proof: QoSProof, consensusType: ConsensusType): Promise<void> {
     const taskId = proof.taskId;
     logger.info(`节点 ${this.nodeId} 达成共识: 任务ID ${taskId}`);
 
@@ -1591,7 +1661,7 @@ export class CommitteeNode {
 
         status.validationInfo.supplementaryRequested = true;
         status.validationInfo.supplementaryRequestTime = new Date().toISOString();
-        status.validationInfo.supplementaryVerifierId = supplementalVerifierId;
+        status.supplementaryVerifierIds?.push(supplementalVerifierId);
 
         this.taskStatuses.set(taskId, status);
       } else {

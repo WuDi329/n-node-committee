@@ -281,6 +281,9 @@ export interface TaskData {
 
   keyframe_timestamps?: string[];
   selected_gops?: string[];
+
+  video_duration?: number;
+  frame_count?: number;
 }
 
 // 转码要求结构
@@ -336,7 +339,7 @@ export interface ConsensusQosProof {
   timestamp: number; // 时间戳
 
   // 委员会信息
-  committee_members: string[]; // 参与共识的委员会成员
+  // committee_members: string[]; // 参与共识的委员会成员
   committee_leader: string; // 提交共识结果的委员会leader
 
   // 质量分数
