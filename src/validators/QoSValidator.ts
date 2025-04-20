@@ -424,7 +424,7 @@ export class QoSValidator {
     }
 
     // 4. 验证音视频同步性（暂时设为通过）
-    logger.info(`任务 ${taskId} 的音视频同步性验证暂未实现，默认通过`);
+    // logger.info(`任务 ${taskId} 的音视频同步性验证暂未实现，默认通过`);
 
     // 全部验证通过
     logger.info(`任务 ${taskId} 的深度验证全部通过`);

@@ -260,3 +260,138 @@ export interface TaskMetrics {
   error?: string;
   taskResults?: any;
 }
+
+// near 相关结构体
+
+// 任务数据结构
+export interface TaskData {
+  task_id: string;
+  broadcaster_id: string;
+  source_ipfs: string;
+  requirements: TranscodingRequirement;
+  status: TaskStatus;
+  assigned_worker?: string;
+  assignment_time?: number;
+  result_ipfs?: string;
+  completion_time?: number;
+  assigned_verifiers: string[];
+  qos_proof_id?: string;
+  publish_time: number;
+  hw_acceleration_preferred: boolean;
+
+  keyframe_timestamps?: string[];
+  selected_gops?: string[];
+}
+
+// 转码要求结构
+export interface TranscodingRequirement {
+  target_codec: string;
+  target_resolution: string;
+  target_bitrate: string;
+  target_framerate: string;
+  additional_params: string;
+}
+
+// 验证者质量证明
+export interface VerifierQosProof {
+  id: string;
+  task_id: string;
+  verifier_id: string;
+  timestamp: number;
+  video_specs: VideoSpecification;
+  video_score: number;
+  gop_scores: GopScore[];
+  audio_score?: number;
+  sync_score?: number;
+  signature: string;
+}
+
+// 视频规格
+export interface VideoSpecification {
+  codec: string;
+  resolution: string;
+  bitrate: number;
+  framerate: number;
+}
+
+// GOP分数
+export interface GopScore {
+  timestamp: string;
+  vmaf_score: number;
+  hash: string;
+}
+
+// 任务验证状态
+export interface TaskVerificationStatus {
+  task_id: string;
+  verified_by: string[];
+  verification_timestamps: number[];
+}
+
+// 共识QoS质量证明结构
+export interface ConsensusQosProof {
+  // 基本信息
+  task_id: string; // 任务ID
+  worker_id: string; // 工作节点ID
+  timestamp: number; // 时间戳
+
+  // 委员会信息
+  committee_members: string[]; // 参与共识的委员会成员
+  committee_leader: string; // 提交共识结果的委员会leader
+
+  // 质量分数
+  video_score: number; // VMAF分数
+  audio_score: number; // PESQ分数
+  sync_score: number; // 同步性分数
+
+  // 视频信息
+  encoding_start_time: number; // 编码开始时间
+  encoding_end_time: number; // 编码结束时间
+  video_specs: VideoSpecification; // 视频规格
+  frame_count: number;
+
+  // GOP验证
+  specified_gop_scores: GopScore[]; // 特定GOP分数
+  gop_verification: GopVerificationResult; // GOP验证结果
+
+  // 状态
+  status: QosProofStatus; // 状态（可以保留，虽然默认是已验证）
+}
+
+export enum GopVerificationResult {
+  Verified = 'Verified', // GOP验证通过
+  ScoreMismatch = 'ScoreMismatch', // 分数不匹配
+  GopMismatch = 'GopMismatch', // GOP结构不匹配
+  UndeterminedError = 'UndeterminedError', // 未确定错误
+}
+
+export enum QosProofStatus {
+  Pending = 'Pending', // 等待通过
+  Normal = 'Normal', // 普通验证通过
+  Conflict = 'Conflict', // 经过补充验证通过
+  Manual = 'Manual', // 经过人工验证通过
+}
+
+// committee相关配置
+export interface CommitteeConfig {
+  nearConfig: {
+    networkId: string;
+    nodeUrl: string;
+    walletUrl: string;
+    helperUrl: string;
+    explorerUrl: string;
+  };
+  contractId: string;
+  leaderAccountId: string;
+  credentialsPath: string;
+  ipfsConfig: {
+    host: string;
+    port: number;
+    protocol: string;
+  };
+  proxyUrl: string;
+  pollingInterval: number;
+  consensusTimeout: number;
+  supplementaryTimeout: number;
+  logLevel: string;
+}

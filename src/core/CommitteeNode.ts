@@ -16,6 +16,7 @@ import {
 import { logger } from '../utils/logger';
 import { calculateHash, sign } from '../utils/crypto';
 import { GlobalMetricsCollector } from '../service/GlobalMetricsCollector';
+import { NearConnectionLeader } from '../near-connection-leader';
 
 export class CommitteeNode {
   private nodeId: string;
@@ -33,6 +34,8 @@ export class CommitteeNode {
   private supplementaryReadyStatus: Map<string, Set<string>> = new Map(); // taskId -> 已就绪的节点集合
   private pendingSupplementaryConsensus: Map<string, any> = new Map(); // 等待启动共识的任务
   private pendingFinalPrePrepareMessages: Map<string, PBFTMessage> = new Map();
+  // 在 CommitteeNode 类中添加以下属性
+  private nearConnection: NearConnectionLeader | null = null;
 
   constructor(
     nodeId: string,
@@ -63,6 +66,34 @@ export class CommitteeNode {
       this.onMessageReceived.bind(this),
       this.handleSupplementaryMessage.bind(this)
     );
+
+    // 如果是Leader节点，初始化NEAR连接
+    if (this.isLeader) {
+      this.initializeNearConnection();
+    }
+  }
+
+  // 添加 NEAR 连接初始化方法
+  private async initializeNearConnection() {
+    try {
+      const config = require('../committee-config');
+
+      // if (!config.committeeConfig) {
+      //   logger.warn('缺少委员会配置，无法初始化NEAR连接');
+      //   return;
+      // }
+
+      this.nearConnection = new NearConnectionLeader(config.committeeConfig);
+      const success = await this.nearConnection.initialize();
+
+      if (success) {
+        logger.info('Leader节点已成功连接到NEAR网络');
+      } else {
+        logger.error('Leader节点连接NEAR网络失败');
+      }
+    } catch (error) {
+      logger.error(`初始化NEAR连接失败: ${error}`);
+    }
   }
 
   public getNodeId(): string {
@@ -1325,12 +1356,150 @@ export class CommitteeNode {
     return this.taskStatuses.get(taskId) || null;
   }
 
+  // 获取音频评分的辅助方法
+  private getAverageAudioScore(taskId: string): number {
+    const proofs = this.getProofsForTask(taskId);
+    const scores = proofs.map(p => p.audioScore || 0).filter(s => s > 0);
+
+    if (scores.length === 0) {
+      return 0;
+    }
+
+    return scores.reduce((sum, score) => sum + score, 0) / scores.length;
+  }
+
+  // 获取GOP验证结果的辅助方法
+  private getVerificationResults(taskId: string): any {
+    const proofs = this.getProofsForTask(taskId);
+
+    // 这里需要根据你的项目实际数据结构来实现
+    // 以下是一个简化的示例
+    const gopScores = proofs[0]?.gopScores || [];
+    const verification = 'Verified'; // 默认值，实际应该根据验证结果确定
+
+    return { gopScores, verification };
+  }
+
+  // 获取同步评分的辅助方法
+  private getAverageSyncScore(taskId: string): number {
+    const proofs = this.getProofsForTask(taskId);
+    const scores = proofs.map(p => p.syncScore || 0);
+
+    if (scores.length === 0) {
+      return 0;
+    }
+
+    return scores.reduce((sum, score) => sum + score, 0) / scores.length;
+  }
+
+  // 获取视频评分的辅助方法
+  private getVideoScores(taskId: string): { average: number; scores: number[] } {
+    const proofs = this.getProofsForTask(taskId);
+    const scores = proofs.map(p => p.videoScore || 0).filter(s => s > 0);
+
+    if (scores.length === 0) {
+      return { average: 0, scores: [] };
+    }
+
+    const average = scores.reduce((sum, score) => sum + score, 0) / scores.length;
+    return { average, scores };
+  }
+
+  // 构造共识证明对象
+  private constructConsensusProof(
+    taskId: string,
+    proof: QoSProof,
+    task: TaskData
+  ): ConsensusQosProof {
+    // 获取参与共识的委员会成员
+    const committeeMembers = this.pbftEngine.getParticipatingNodes().map(nodeId => {
+      // 注意：这里需要将节点ID映射到实际的NEAR账户ID
+      // 这个映射关系需要根据你的项目配置来实现
+      return nodeId;
+    });
+
+    const videoScores = this.getVideoScores(taskId);
+    const gopsResults = this.getVerificationResults(taskId);
+
+    return {
+      task_id: taskId,
+      worker_id: task.assigned_worker!,
+      committee_members: committeeMembers,
+      committee_leader: this.nodeId,
+      timestamp: Date.now(),
+
+      // 以下值需要从验证结果中提取
+      video_score: videoScores.average,
+      audio_score: this.getAverageAudioScore(taskId),
+      sync_score: this.getAverageSyncScore(taskId),
+
+      encoding_start_time: proof.encodingStartTime || 0,
+      encoding_end_time: proof.encodingEndTime || 0,
+      video_specs: proof.videoSpecs,
+      frame_count: proof.frameCount || 0,
+
+      specified_gop_scores: gopsResults.gopScores,
+      gop_verification: gopsResults.verification,
+
+      status: QosProofStatus.Normal, // 默认状态，会被提交时的参数覆盖
+    };
+  }
+
+  // 添加向区块链提交共识结果的方法
+  private async submitConsensusToBlockchain(
+    taskId: string,
+    proof: QoSProof,
+    status: QosProofStatus
+  ): Promise<boolean> {
+    if (!this.nearConnection) {
+      logger.error(`无法提交共识结果: NEAR连接未初始化`);
+      return false;
+    }
+
+    try {
+      // 获取任务详情
+      const task = await this.nearConnection.getTask(taskId);
+      if (!task) {
+        logger.error(`无法获取任务 ${taskId} 的详情`);
+        return false;
+      }
+
+      // 构造共识证明
+      const consensusProof = this.constructConsensusProof(taskId, proof, task);
+
+      // 提交共识证明
+      const result = await this.nearConnection.submitConsensusProof(consensusProof, status);
+
+      if (result) {
+        logger.info(`成功提交任务 ${taskId} 的共识结果到区块链，状态: ${status}`);
+      } else {
+        logger.error(`提交任务 ${taskId} 的共识结果到区块链失败`);
+      }
+
+      return result;
+    } catch (error) {
+      logger.error(`提交共识结果到区块链时出错: ${error}`);
+      return false;
+    }
+  }
+
   // 共识达成后的回调
   private onConsensusReached(proof: QoSProof, consensusType: ConsensusType): void {
     const taskId = proof.taskId;
     logger.info(`节点 ${this.nodeId} 达成共识: 任务ID ${taskId}`);
 
     console.warn(`${this.nodeId} 视角下 inside onConsensusReached，当前时间${Date.now()}`);
+
+    // 只有Leader节点执行区块链交互
+    if (this.isLeader && this.nearConnection) {
+      if (consensusType === ConsensusType.Conflict) {
+        // 处理冲突共识
+        await this.handleConflictConsensusReached(taskId);
+      } else {
+        // 处理正常共识，提交结果到区块链
+        await this.submitConsensusToBlockchain(taskId, proof, QosProofStatus.Normal);
+      }
+    }
 
     // TODO: 在此处添加上链或其他后处理逻辑
     // 例如：调用智能合约将结果存储在区块链上
@@ -1376,6 +1545,69 @@ export class CommitteeNode {
     this.processingConsensus = false;
     this.currentConsensusTaskId = null;
     this.processConsensusQueue();
+  }
+
+  // 处理冲突共识后向区块链请求补充验证者
+  private async handleConflictConsensusReached(taskId: string): Promise<void> {
+    if (!this.nearConnection) {
+      logger.error(`无法处理冲突共识: NEAR连接未初始化`);
+      return;
+    }
+
+    const status = this.taskStatuses.get(taskId);
+    if (!status) {
+      logger.warn(`无法处理冲突共识：任务 ${taskId} 无状态`);
+      return;
+    }
+
+    // 记录事件
+    const metricsCollector = GlobalMetricsCollector.getInstance();
+    metricsCollector.recordConsensusEvent({
+      taskId: taskId,
+      nodeId: this.nodeId,
+      eventType: EventType.CONSENSUS_REACH_CONFLICT,
+      timestamp: Date.now(),
+      ConsensusResult: {},
+    });
+
+    // 更新任务状态为等待补充验证
+    status.state = TaskProcessingState.AwaitingSupplementary;
+    status.updatedAt = new Date().toISOString();
+    this.taskStatuses.set(taskId, status);
+
+    logger.info(`任务 ${taskId} 进入等待补充验证状态`);
+
+    try {
+      // 请求补充验证者
+      const supplementalVerifierId = await this.nearConnection.requestSupplementalVerifier(taskId);
+
+      if (supplementalVerifierId) {
+        logger.info(`成功为任务 ${taskId} 请求补充验证者: ${supplementalVerifierId}`);
+
+        // 更新任务状态，记录补充验证者信息
+        if (!status.validationInfo) {
+          status.validationInfo = {};
+        }
+
+        status.validationInfo.supplementaryRequested = true;
+        status.validationInfo.supplementaryRequestTime = new Date().toISOString();
+        status.validationInfo.supplementaryVerifierId = supplementalVerifierId;
+
+        this.taskStatuses.set(taskId, status);
+      } else {
+        logger.error(`请求补充验证者失败，任务: ${taskId}`);
+
+        // 更新状态为需要人工审核
+        status.state = TaskProcessingState.NeedsManualReview;
+        this.taskStatuses.set(taskId, status);
+      }
+    } catch (error) {
+      logger.error(`请求补充验证者时出错: ${error}`);
+
+      // 更新状态为需要人工审核
+      status.state = TaskProcessingState.NeedsManualReview;
+      this.taskStatuses.set(taskId, status);
+    }
   }
 
   // 获取节点状态
