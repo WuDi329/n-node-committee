@@ -5,6 +5,7 @@ import {
   ValidationResult,
   QoSProof,
   ConsensusType,
+  VerifierQosProof,
 } from '../models/types';
 import { calculateHash, sign } from '../utils/crypto';
 import { logger } from '../utils/logger';
@@ -23,9 +24,9 @@ export class PBFTEngine {
   private pendingPrepareMessages: Map<string, PBFTMessage[]> = new Map();
   private pendingCommitMessages: Map<string, PBFTMessage[]> = new Map();
   private completedSequences: Set<number> = new Set();
-  private currentProposal: QoSProof | null = null;
+  private currentProposal: VerifierQosProof | null = null;
   private currentDigest: string = '';
-  private onConsensusReached: (proof: QoSProof, type: ConsensusType) => void;
+  private onConsensusReached: (proof: VerifierQosProof, type: ConsensusType) => void;
   // private validationResults: Map<string, ValidationResult> = new Map();
   private consensusThreshold: number;
   private privateKey: string = 'private_key';
@@ -34,7 +35,7 @@ export class PBFTEngine {
     nodeId: string,
     isLeader: boolean,
     totalNodes: number,
-    onConsensusReached: (proof: QoSProof, consensusType: ConsensusType) => void,
+    onConsensusReached: (proof: VerifierQosProof, consensusType: ConsensusType) => void,
     privateKey?: string
   ) {
     this.nodeId = nodeId;
@@ -58,7 +59,7 @@ export class PBFTEngine {
   }
 
   // Leader生成PrePrepare消息
-  public startConsensus(proof: QoSProof, consensusType: ConsensusType): PBFTMessage | null {
+  public startConsensus(proof: VerifierQosProof, consensusType: ConsensusType): PBFTMessage | null {
     if (!this.isLeader) {
       logger.warn(`Non-leader node ${this.nodeId} attempted to start consensus`);
       return null;
@@ -80,7 +81,7 @@ export class PBFTEngine {
       type: MessageType.PrePrepare,
       consensusType: this.currentConsensusType,
       viewNumber: this.viewNumber,
-      taskId: proof.taskId,
+      taskId: proof.task_id,
       sequenceNumber: this.sequenceNumber,
       nodeId: this.nodeId,
       data: proof,
@@ -146,7 +147,7 @@ export class PBFTEngine {
 
     // 对于非Leader节点或Leader处理自己的消息时，更新状态
     if (!this.isLeader || (this.isLeader && message.nodeId === this.nodeId)) {
-      this.currentProposal = message.data as QoSProof;
+      this.currentProposal = message.data as VerifierQosProof;
       this.currentDigest = message.digest;
       this.viewNumber = message.viewNumber!;
       this.sequenceNumber = message.sequenceNumber!;
