@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import bodyParser from 'body-parser';
 import { CommitteeNode } from '../core/CommitteeNode';
-import { QoSProof, TaskProcessingState } from '../models/types';
+import { QoSProof, TaskProcessingState, VerifierQosProof } from '../models/types';
 import { logger } from '../utils/logger';
 
 export class ApiServer {
@@ -26,7 +26,7 @@ export class ApiServer {
 
   private validateProof(proof: any): { isValid: boolean; message?: string } {
     // 验证必要字段
-    if (!proof.taskId || !proof.verifierId) {
+    if (!proof.task_id || !proof.verifier_id) {
       return { isValid: false, message: 'Missing required fields: taskId, verifierId' };
     }
 
@@ -36,12 +36,12 @@ export class ApiServer {
     }
 
     // 验证媒体规格
-    if (!proof.mediaSpecs) {
+    if (!proof.video_specs) {
       return { isValid: false, message: 'Missing mediaSpecs' };
     }
 
     // 验证视频质量数据
-    if (!proof.videoQualityData || typeof proof.videoQualityData.overallScore !== 'number') {
+    if (!proof.video_score || typeof proof.video_score !== 'number') {
       return { isValid: false, message: 'Invalid videoQualityData' };
     }
 
@@ -68,16 +68,17 @@ export class ApiServer {
     this.app.post('/proof', (req: express.Request, res: express.Response): void => {
       try {
         const proof = req.body;
+        console.log('收到请求');
 
         // 增强的验证逻辑
-        const validation = this.validateProof(proof);
-        if (!validation.isValid) {
-          res.status(400).json({
-            error: 'Invalid proof data',
-            message: validation.message,
-          });
-          return;
-        }
+        // const validation = this.validateProof(proof);
+        // if (!validation.isValid) {
+        //   res.status(400).json({
+        //     error: 'Invalid proof data',
+        //     message: validation.message,
+        //   });
+        //   return;
+        // }
 
         logger.info(
           `${this.committeeNode.getNodeId()}的APIServer接收到任务ID ${proof.taskId} 的QoS证明提交`
@@ -91,7 +92,7 @@ export class ApiServer {
 
         // 提交到Committee节点处理
         // 提交到Committee节点处理，但不等待其完成
-        this.committeeNode.handleQoSProof(proof as QoSProof).catch(error => {
+        this.committeeNode.handleQoSProof(proof as VerifierQosProof).catch(error => {
           logger.error('处理QoS证明时出错:', error);
         });
       } catch (error) {
@@ -130,7 +131,7 @@ export class ApiServer {
               };
             }
 
-            this.committeeNode.handleQoSProof(proof as QoSProof);
+            this.committeeNode.handleQoSProof(proof as VerifierQosProof);
             return { taskId: proof.taskId, status: 'accepted' };
           } catch (error) {
             return {
@@ -187,9 +188,11 @@ export class ApiServer {
 
           // 提交到Committee节点处理
           // 提交到Committee节点处理，但不等待其完成
-          this.committeeNode.handleSupplementaryProof(taskId, proof as QoSProof).catch(error => {
-            logger.error(`处理补充QoS证明提交时出错: ${error}`);
-          });
+          this.committeeNode
+            .handleSupplementaryProof(taskId, proof as VerifierQosProof)
+            .catch(error => {
+              logger.error(`处理补充QoS证明提交时出错: ${error}`);
+            });
         } catch (error) {
           logger.error(`处理补充QoS证明提交时出错: ${error}`);
           res.status(500).json({

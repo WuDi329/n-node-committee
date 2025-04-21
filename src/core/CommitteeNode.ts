@@ -16,6 +16,8 @@ import {
   TaskData,
   QosProofStatus,
   ConsensusQosProof,
+  GopVerificationResult,
+  VerifierQosProof,
 } from '../models/types';
 import { logger } from '../utils/logger';
 import { calculateHash, sign } from '../utils/crypto';
@@ -29,7 +31,7 @@ export class CommitteeNode {
   private qosValidator: QoSValidator;
   private isLeader: boolean;
   private taskStatuses: Map<string, TaskStatus> = new Map();
-  private taskProofs: Map<string, QoSProof[]> = new Map();
+  private taskProofs: Map<string, VerifierQosProof[]> = new Map();
   private consensusQueue: string[] = []; // 存储等待共识的任务ID
   private processingConsensus: boolean = false; // 标记是否正在处理共识
   private privateKey: string = 'private_key';
@@ -80,14 +82,16 @@ export class CommitteeNode {
   // 添加 NEAR 连接初始化方法
   private async initializeNearConnection() {
     try {
-      const config = require('../committee-config');
+      const config = require('../committee-config').default;
 
-      // if (!config.committeeConfig) {
-      //   logger.warn('缺少委员会配置，无法初始化NEAR连接');
-      //   return;
-      // }
+      console.log(config);
 
-      this.nearConnection = new NearConnectionLeader(config.committeeConfig);
+      if (!config) {
+        logger.warn('缺少委员会配置，无法初始化NEAR连接');
+        return;
+      }
+
+      this.nearConnection = new NearConnectionLeader(config);
       const success = await this.nearConnection.initialize();
 
       if (success) {
@@ -118,13 +122,13 @@ export class CommitteeNode {
     logger.info(`委员会节点 ${this.nodeId} 已停止`);
   }
 
-  private storeProof(taskId: string, proof: QoSProof): void {
+  private storeProof(taskId: string, proof: VerifierQosProof): void {
     let proofs = this.taskProofs.get(taskId) || [];
     proofs.push(proof);
     this.taskProofs.set(taskId, proofs);
   }
 
-  private getProofsForTask(taskId: string): QoSProof[] {
+  private getProofsForTask(taskId: string): VerifierQosProof[] {
     return this.taskProofs.get(taskId) || [];
   }
 
@@ -276,7 +280,7 @@ export class CommitteeNode {
   // 添加队列管理方法
   private enqueueConsensusTask(
     taskId: string,
-    proof: QoSProof,
+    proof: VerifierQosProof,
     consensusType: ConsensusType
   ): void {
     // 将任务ID添加到队列
@@ -295,6 +299,8 @@ export class CommitteeNode {
 
   // 处理共识队列
   private async processConsensusQueue(): Promise<void> {
+    console.log('inside processConsensusQueue');
+    console.log('开始执行第一个任务');
     if (this.processingConsensus || this.consensusQueue.length === 0) {
       return;
     }
@@ -406,31 +412,34 @@ export class CommitteeNode {
 
   // 处理从Verifier收到的QoS证明
   // 处理从Verifier收到的QoS证明 - 异步版本
-  public async handleQoSProof(proof: QoSProof): Promise<void> {
+  public async handleQoSProof(proof: VerifierQosProof): Promise<void> {
     // 返回一个Promise，包装原始处理逻辑
     return new Promise<void>(resolve => {
       // 使用setImmediate将处理逻辑放入下一个事件循环
       setImmediate(async () => {
         try {
-          const { taskId, verifierId, timestamp } = proof;
+          const { task_id, verifier_id, timestamp } = proof;
+          console.log('inside handleQoSProof');
+          console.log('收集到proof');
+          console.log(proof);
           const now = new Date().toISOString();
           const metricsCollector = GlobalMetricsCollector.getInstance();
 
           // 记录接收到QoSProof证明事件
           metricsCollector.recordEvent({
-            taskId: proof.taskId,
+            taskId: proof.task_id,
             nodeId: this.nodeId,
             eventType: EventType.PROOF_RECEIVED,
             timestamp: Date.now(),
-            metadata: { verifierId: proof.verifierId },
+            metadata: { verifierId: proof.verifier_id },
           });
 
           // 首先对每个证明进行快速验证
-          logger.info(`${this.nodeId}对任务${proof.taskId}执行快速验证`);
+          logger.info(`${this.nodeId}对任务${proof.task_id}执行快速验证`);
           const validationResult = this.qosValidator.quickValidate(proof);
           if (!validationResult.isValid) {
             logger.warn(
-              `${this.nodeId}: 任务 ${taskId} 的QoS证明快速验证失败: ${JSON.stringify(validationResult.details)}`
+              `${this.nodeId}: 任务 ${task_id} 的QoS证明快速验证失败: ${JSON.stringify(validationResult.details)}`
             );
             // 验证失败仅忽略该证明，不影响任务状态
             resolve(); // 即使验证失败也解析Promise
@@ -438,32 +447,35 @@ export class CommitteeNode {
           }
 
           // 获取或创建任务状态
-          let status = this.taskStatuses.get(taskId);
+          let status = this.taskStatuses.get(task_id);
           if (!status) {
             status = {
-              taskId: taskId,
+              taskId: task_id,
               state: TaskProcessingState.Pending,
               proofCount: 0,
               verifierIds: [],
               createdAt: now,
               updatedAt: now,
             };
-            logger.info(`${this.nodeId}创建新任务状态: ${taskId}`);
+            logger.info(`${this.nodeId}创建新任务状态: ${task_id}`);
           }
 
           // 检查当前verifier是否已经提交过这个证明
-          if (!status.verifierIds.includes(verifierId)) {
+          if (!status.verifierIds.includes(verifier_id)) {
             // 存储验证通过的QoS证明
-            this.storeProof(taskId, proof);
+            this.storeProof(task_id, proof);
 
             // 更新任务状态
             status.proofCount++;
-            status.verifierIds.push(verifierId);
+            status.verifierIds.push(verifier_id);
             status.updatedAt = now;
 
             logger.info(
-              `${this.nodeId}: 任务 ${taskId} 收到来自 ${verifierId} 的QoS证明,当前共 ${status.proofCount} 个证明`
+              `${this.nodeId}: 任务 ${task_id} 收到来自 ${verifier_id} 的QoS证明,当前共 ${status.proofCount} 个证明`
             );
+
+            console.log('当前qosProof');
+            console.log(proof);
 
             // 处理Leader节点的验证和共识逻辑
             if (this.isLeader) {
@@ -475,12 +487,12 @@ export class CommitteeNode {
               // 收集到足够的证明(>=2)时启动共识
               if (status.proofCount >= 2 && status.state !== TaskProcessingState.Consensus) {
                 // 获取所有证明
-                const proofs = this.getProofsForTask(taskId);
+                const proofs = this.getProofsForTask(task_id);
 
                 // 验证是否有足够的有效证明启动共识
                 if (proofs.length >= 2) {
                   logger.info(
-                    `Leader: 任务 ${taskId} 已收集足够证明(${proofs.length}个)，准备启动共识流程`
+                    `Leader: 任务 ${task_id} 已收集足够证明(${proofs.length}个)，准备启动共识流程`
                   );
 
                   // 使用深度验证确定共识类型
@@ -495,15 +507,15 @@ export class CommitteeNode {
                     deepValidationResult.conflictType =
                       this.qosValidator.analyzeConflictType(deepValidationResult);
                     logger.info(
-                      `Leader: 任务 ${taskId} 的证明深度验证不通过，冲突类型: ${deepValidationResult.conflictType}, 详情: ${JSON.stringify(deepValidationResult.details)}`
+                      `Leader: 任务 ${task_id} 的证明深度验证不通过，冲突类型: ${deepValidationResult.conflictType}, 详情: ${JSON.stringify(deepValidationResult.details)}`
                     );
 
                     metricsCollector.recordValidationEvent({
-                      taskId: proof.taskId,
+                      taskId: proof.task_id,
                       nodeId: this.nodeId,
                       eventType: EventType.PROOF_CONFLICT,
                       timestamp: Date.now(),
-                      metadata: { verifierId: proof.verifierId },
+                      metadata: { verifierId: proof.verifier_id },
                       validationResult: deepValidationResult,
                     });
 
@@ -518,23 +530,23 @@ export class CommitteeNode {
                     status.validationInfo.conflictDetails = deepValidationResult.details;
                   } else {
                     metricsCollector.recordValidationEvent({
-                      taskId: proof.taskId,
+                      taskId: proof.task_id,
                       nodeId: this.nodeId,
                       eventType: EventType.PROOF_VALIDATED,
                       timestamp: Date.now(),
-                      metadata: { verifierId: proof.verifierId },
+                      metadata: { verifierId: proof.verifier_id },
                       validationResult: deepValidationResult,
                     });
                   }
 
                   // 更新任务状态为Consensus
                   status.state = TaskProcessingState.Consensus;
-                  this.taskStatuses.set(taskId, status);
+                  this.taskStatuses.set(task_id, status);
 
-                  logger.info(`任务 ${taskId} 已加入共识队列`);
+                  logger.info(`任务 ${task_id} 已加入共识队列`);
 
                   // 将任务加入共识队列 - 注意这里可能需要改造为异步
-                  await this.enqueueConsensusTask(taskId, proofs[0], consensusType);
+                  await this.enqueueConsensusTask(task_id, proofs[0], consensusType);
                 }
               }
             } else {
@@ -544,14 +556,14 @@ export class CommitteeNode {
               }
 
               // 检查是否有待处理的PrePrepare消息需要处理
-              await this.checkPendingPrePrepareMessages(taskId);
+              await this.checkPendingPrePrepareMessages(task_id);
             }
           } else {
-            logger.info(`任务 ${taskId} 已经收到来自 ${verifierId} 的重复QoS证明，已忽略`);
+            logger.info(`任务 ${task_id} 已经收到来自 ${verifier_id} 的重复QoS证明，已忽略`);
           }
 
           // 更新任务状态
-          this.taskStatuses.set(taskId, status);
+          this.taskStatuses.set(task_id, status);
 
           // 成功完成处理
           resolve();
@@ -718,7 +730,7 @@ export class CommitteeNode {
       }
     }
 
-    const validationResult = this.qosValidator.quickValidate(message.data as QoSProof);
+    const validationResult = this.qosValidator.quickValidate(message.data as VerifierQosProof);
     if (!validationResult.isValid) {
       logger.warn(`QoS证明验证失败：${JSON.stringify(validationResult.details)}`);
       return null;
@@ -735,7 +747,7 @@ export class CommitteeNode {
         taskId: taskId,
         state: TaskProcessingState.Verified, // 初始状态为Verified
         proofCount: localProofs.length,
-        verifierIds: localProofs.map((p: QoSProof) => p.verifierId),
+        verifierIds: localProofs.map((p: VerifierQosProof) => p.verifier_id),
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
@@ -1092,7 +1104,7 @@ export class CommitteeNode {
   //   return 'leader'; // 默认值
   // }
 
-  public async handleSupplementaryProof(taskId: string, proof: QoSProof): Promise<void> {
+  public async handleSupplementaryProof(taskId: string, proof: VerifierQosProof): Promise<void> {
     // 返回一个Promise，包装原始处理逻辑
     return new Promise<void>(resolve => {
       // 使用setImmediate将处理逻辑放入下一个事件循环
@@ -1145,14 +1157,14 @@ export class CommitteeNode {
           // 将补充证明存储到系统中
           this.storeProof(taskId, proof);
           status.proofCount++;
-          status.verifierIds.push(proof.verifierId);
+          status.verifierIds.push(proof.verifier_id);
           status.updatedAt = new Date().toISOString();
 
           // 专门记录补充验证者ID
           if (!status.supplementaryVerifierIds) {
             status.supplementaryVerifierIds = [];
           }
-          status.supplementaryVerifierIds.push(proof.verifierId);
+          status.supplementaryVerifierIds.push(proof.verifier_id);
 
           // 获取保存的冲突信息
           const conflictType = status.validationInfo?.conflictType || 'structural';
@@ -1364,8 +1376,8 @@ export class CommitteeNode {
   private getAverageAudioScore(taskId: string): number {
     const proofs = this.getProofsForTask(taskId);
     const scores = proofs
-      .filter(p => p.audioQualityData && typeof p.audioQualityData.overallScore === 'number')
-      .map(p => p.audioQualityData.overallScore);
+      .filter(p => p.audio_score && typeof p.audio_score === 'number')
+      .map(p => p.audio_score as number);
 
     if (scores.length === 0) {
       return 0;
@@ -1376,39 +1388,43 @@ export class CommitteeNode {
 
   // 获取GOP验证结果的辅助方法
   // 获取GOP验证结果的辅助方法
-  private getVerificationResults(taskId: string): any {
+  private getVerificationResults(taskId: string): {
+    gopScores: GopScore[];
+    verification: GopVerificationResult;
+  } {
     const proofs = this.getProofsForTask(taskId);
 
-    if (proofs.length === 0 || !proofs[0].videoQualityData) {
-      return { gopScores: [], verification: 'Unknown' };
+    // console.log('inside getVerificationResults');
+    // console.log('proofs');
+    // console.log(proofs);
+    // console.log('first proof 的 videoQualityData 的 gopScores');
+    // console.log(proofs[0].videoQualityData.gopScores);
+    // console.log('second proof 的 videoQualityData 的 gopScores');
+    // console.log(proofs[1].videoQualityData.gopScores);
+
+    if (proofs.length === 0 || !proofs[0].video_score) {
+      return { gopScores: [], verification: GopVerificationResult.UndeterminedError };
     }
 
-    // 从第一个证明中提取GOP分数
-    const firstProof = proofs[0];
-    let gopScores: GopScore[] = [];
+    let originalGopScores = proofs[0].gop_scores;
 
-    if (firstProof.videoQualityData && firstProof.videoQualityData.gopScores) {
-      // 转换GOP分数格式以符合合约要求
-      gopScores = Object.entries(firstProof.videoQualityData.gopScores).map(
-        ([timestamp, score]) => {
-          return {
-            timestamp: timestamp,
-            vmaf_score: parseFloat(score as string),
-            hash: '', // 如果有hash值，应该从证明中提取
-          };
-        }
-      );
-    }
+    // 转换gopScores，确保使用vmaf_score字段名
+    const gopScores = originalGopScores.map(score => ({
+      timestamp: score.timestamp,
+      // @ts-ignore
+      vmaf_score: score.vmafResult || score.vmafScore || 0, // 将vmafResult转换为vmaf_score
+      hash: score.hash || '',
+    }));
 
     // 确定验证结果
     // 默认为已验证
-    let verification = 'Verified';
+    let verification = GopVerificationResult.Verified;
 
     // 检查是否所有证明的GOP评分一致
     if (proofs.length > 1) {
       const allGopScoresMatch = this.compareGopScores(proofs);
       if (!allGopScoresMatch) {
-        verification = 'GopMismatch';
+        verification = GopVerificationResult.GopMismatch;
       }
     }
 
@@ -1416,19 +1432,33 @@ export class CommitteeNode {
   }
 
   // 比较多个证明的GOP分数是否一致
-  private compareGopScores(proofs: QoSProof[]): boolean {
+  private compareGopScores(proofs: VerifierQosProof[]): boolean {
     if (proofs.length <= 1) {
       return true;
     }
 
-    // 获取第一个证明的GOP分数
-    const firstGopScores = proofs[0].videoQualityData?.gopScores || {};
-    const firstTimestamps = Object.keys(firstGopScores).sort();
+    // 获取第一个证明的GOP分数数组
+    const firstGopScoresArray = proofs[0].gop_scores || [];
+
+    // 创建一个Map用于快速查找，键为timestamp
+    const firstGopScoresMap = new Map<string, number>();
+    firstGopScoresArray.forEach(score => {
+      firstGopScoresMap.set(score.timestamp, score.vmaf_score);
+    });
+
+    const firstTimestamps = Array.from(firstGopScoresMap.keys()).sort();
 
     // 与其他证明比较
     for (let i = 1; i < proofs.length; i++) {
-      const currentGopScores = proofs[i].videoQualityData?.gopScores || {};
-      const currentTimestamps = Object.keys(currentGopScores).sort();
+      const currentGopScoresArray = proofs[i].gop_scores || [];
+
+      // 创建当前证明的Map
+      const currentGopScoresMap = new Map<string, number>();
+      currentGopScoresArray.forEach(score => {
+        currentGopScoresMap.set(score.timestamp, score.vmaf_score);
+      });
+
+      const currentTimestamps = Array.from(currentGopScoresMap.keys()).sort();
 
       // 比较时间戳数量
       if (firstTimestamps.length !== currentTimestamps.length) {
@@ -1437,15 +1467,17 @@ export class CommitteeNode {
 
       // 比较每个时间戳的评分
       for (const timestamp of firstTimestamps) {
-        if (!currentGopScores[timestamp]) {
+        const currentScore = currentGopScoresMap.get(timestamp);
+
+        // 如果当前时间戳不存在
+        if (currentScore === undefined) {
           return false;
         }
 
-        // 允许一定的分数差异(例如1%)
-        const firstScore = parseFloat(firstGopScores[timestamp] as string);
-        const currentScore = parseFloat(currentGopScores[timestamp] as string);
+        const firstScore = firstGopScoresMap.get(timestamp)!;
         const difference = Math.abs(firstScore - currentScore);
 
+        // 允许一定的分数差异(例如1%)
         if (difference > firstScore * 0.01) {
           return false;
         }
@@ -1459,8 +1491,8 @@ export class CommitteeNode {
   private getAverageSyncScore(taskId: string): number {
     const proofs = this.getProofsForTask(taskId);
     const scores = proofs
-      .filter(p => p.syncQualityData && typeof p.syncQualityData.overallScore === 'number')
-      .map(p => p.syncQualityData.overallScore);
+      .filter(p => p.sync_score && typeof p.sync_score === 'number')
+      .map(p => p.sync_score as number);
 
     if (scores.length === 0) {
       return 0;
@@ -1472,7 +1504,7 @@ export class CommitteeNode {
   // 获取视频评分的辅助方法
   private getVideoScores(taskId: string): { average: number; scores: number[] } {
     const proofs = this.getProofsForTask(taskId);
-    const scores = proofs.map(p => p.videoQualityData?.overallScore || 0).filter(s => s > 0);
+    const scores = proofs.map(p => p.video_score).filter(s => s > 0);
 
     if (scores.length === 0) {
       return { average: 0, scores: [] };
@@ -1485,11 +1517,17 @@ export class CommitteeNode {
   // 构造共识证明对象
   private constructConsensusProof(
     taskId: string,
-    proof: QoSProof,
+    proof: VerifierQosProof,
     task: TaskData
   ): ConsensusQosProof {
     const videoScores = this.getVideoScores(taskId);
+    console.log('audio_score');
+    console.log(videoScores);
     const gopsResults = this.getVerificationResults(taskId);
+    console.log('gopsResults.gopScores');
+    console.log(gopsResults.gopScores);
+    console.log('gopsResults.verification');
+    console.log(gopsResults.verification);
 
     return {
       task_id: taskId,
@@ -1505,11 +1543,11 @@ export class CommitteeNode {
 
       encoding_start_time: task.assignment_time || 0,
       encoding_end_time: task.completion_time || 0,
-      video_specs: proof.mediaSpecs,
+      video_specs: proof.video_specs,
       frame_count: task.frame_count || 0,
 
       specified_gop_scores: gopsResults.gopScores,
-      gop_verification: gopsResults.verification,
+      gop_verification: GopVerificationResult.Verified,
 
       status: QosProofStatus.Normal, // 默认状态，会被提交时的参数覆盖
     };
@@ -1518,7 +1556,7 @@ export class CommitteeNode {
   // 添加向区块链提交共识结果的方法
   private async submitConsensusToBlockchain(
     taskId: string,
-    proof: QoSProof,
+    proof: VerifierQosProof,
     status: QosProofStatus
   ): Promise<boolean> {
     if (!this.nearConnection) {
@@ -1537,8 +1575,18 @@ export class CommitteeNode {
       // 构造共识证明
       const consensusProof = this.constructConsensusProof(taskId, proof, task);
 
+      console.log('已经构建consensusProof');
+      console.log(consensusProof);
+
+      // 添加调试输出
+      console.log('consensusProof对象类型检查:');
+      console.log('gop_verification类型:', typeof consensusProof.gop_verification);
+      console.log('gop_verification值:', consensusProof.gop_verification);
+      console.log('status类型:', typeof consensusProof.status);
+      console.log('status值:', consensusProof.status);
+
       // 提交共识证明
-      const result = await this.nearConnection.submitConsensusProof(consensusProof, status);
+      const result = await this.nearConnection.submitConsensusProof(consensusProof);
 
       if (result) {
         logger.info(`成功提交任务 ${taskId} 的共识结果到区块链，状态: ${status}`);
@@ -1554,11 +1602,17 @@ export class CommitteeNode {
   }
 
   // 共识达成后的回调
-  private async onConsensusReached(proof: QoSProof, consensusType: ConsensusType): Promise<void> {
-    const taskId = proof.taskId;
+  private async onConsensusReached(
+    proof: VerifierQosProof,
+    consensusType: ConsensusType
+  ): Promise<void> {
+    const taskId = proof.task_id;
     logger.info(`节点 ${this.nodeId} 达成共识: 任务ID ${taskId}`);
 
     console.warn(`${this.nodeId} 视角下 inside onConsensusReached，当前时间${Date.now()}`);
+
+    console.log('proof');
+    console.log(proof);
 
     // 只有Leader节点执行区块链交互
     if (this.isLeader && this.nearConnection) {

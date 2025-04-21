@@ -1,10 +1,10 @@
-import { ValidationResult, QoSProof } from '../models/types';
+import { ValidationResult, QoSProof, VerifierQosProof } from '../models/types';
 import { logger } from '../utils/logger';
 
 export class QoSValidator {
   private readonly SCORE_THRESHOLD = 3;
 
-  public quickValidate(qosProof: QoSProof): ValidationResult {
+  public quickValidate(qosProof: VerifierQosProof): ValidationResult {
     // logger.info(`对任务 ${qosProof.taskId} 执行快速验证`);
 
     // 1. 验证数据结构完整性
@@ -32,10 +32,7 @@ export class QoSValidator {
     }
 
     // 验证 gopScores 是否存在且非空
-    if (
-      !qosProof.videoQualityData.gopScores ||
-      Object.keys(qosProof.videoQualityData.gopScores).length === 0
-    ) {
+    if (!qosProof.gop_scores || qosProof.gop_scores.length === 0) {
       return {
         isValid: false,
         details: {
@@ -48,15 +45,18 @@ export class QoSValidator {
   }
 
   // 验证数据结构完整性
-  private validateStructure(proof: QoSProof): ValidationResult {
+  private validateStructure(proof: VerifierQosProof): ValidationResult {
+    console.log('inside validateStructure');
+    console.log('proof');
+    console.log(proof);
     // 验证必要字段是否存在
     const missingFields = [];
 
-    if (!proof.taskId) missingFields.push('taskId');
-    if (!proof.verifierId) missingFields.push('verifierId');
+    if (!proof.task_id) missingFields.push('task_id');
+    if (!proof.verifier_id) missingFields.push('verifier_id');
     if (proof.timestamp === undefined) missingFields.push('timestamp');
-    if (!proof.mediaSpecs) missingFields.push('mediaSpecs');
-    if (!proof.videoQualityData) missingFields.push('videoQualityData');
+    if (!proof.video_specs) missingFields.push('video_specs');
+    if (!proof.video_score) missingFields.push('video_score');
     if (!proof.signature) missingFields.push('signature');
 
     if (missingFields.length > 0) {
@@ -70,7 +70,7 @@ export class QoSValidator {
     }
 
     // 验证视频质量数据字段
-    if (typeof proof.videoQualityData.overallScore !== 'number') {
+    if (typeof proof.video_score !== 'number') {
       return {
         isValid: false,
         details: {
@@ -83,9 +83,9 @@ export class QoSValidator {
   }
 
   // 验证数值范围合理性
-  private validateValueRanges(proof: QoSProof): ValidationResult {
+  private validateValueRanges(proof: VerifierQosProof): ValidationResult {
     // 验证视频质量评分是否在合理范围内 (假设范围为0-100)
-    const score = proof.videoQualityData.overallScore;
+    const score = proof.video_score;
     if (score < 0 || score > 100) {
       return {
         isValid: false,
@@ -99,12 +99,12 @@ export class QoSValidator {
 
     // 验证媒体规格中的参数是否在合理范围内
     // 这里仅为示例，实际实现需要根据具体的mediaSpecs结构调整
-    if (proof.mediaSpecs.bitrate && proof.mediaSpecs.bitrate <= 0) {
+    if (proof.video_specs.bitrate && proof.video_specs.bitrate <= 0) {
       return {
         isValid: false,
         details: {
           reason: '媒体码率不合理',
-          bitrate: proof.mediaSpecs.bitrate,
+          bitrate: proof.video_specs.bitrate,
         },
       };
     }
@@ -113,7 +113,7 @@ export class QoSValidator {
   }
 
   // 验证时间戳逻辑
-  private validateTimeLogic(proof: QoSProof): ValidationResult {
+  private validateTimeLogic(proof: VerifierQosProof): ValidationResult {
     const now = Date.now();
 
     // 验证时间戳是否在未来
@@ -151,7 +151,7 @@ export class QoSValidator {
 
   // 验证签名
   // todo: 实际应用中需要使用加密库验证签名
-  private validateSignature(proof: QoSProof): ValidationResult {
+  private validateSignature(proof: VerifierQosProof): ValidationResult {
     // 实际应用中，这里应该使用加密库验证签名
     // 例如：使用 Verifier 的公钥验证 signature 是否与证明数据匹配
 
@@ -176,9 +176,9 @@ export class QoSValidator {
     return numbers.every(n => n === first);
   }
 
-  private validateMediaSpecsConsistency(proofs: QoSProof[]): ValidationResult {
+  private validateMediaSpecsConsistency(proofs: VerifierQosProof[]): ValidationResult {
     // 提取所有证明中的媒体规格
-    const mediaSpecs = proofs.map(p => p.mediaSpecs);
+    const mediaSpecs = proofs.map(p => p.video_specs);
 
     // 验证编码格式一致性
     const codecSet = new Set(mediaSpecs.map(spec => spec.codec));
@@ -186,7 +186,7 @@ export class QoSValidator {
       return {
         isValid: false,
         hasConflict: true,
-        conflictingVerifiers: proofs.map(p => p.verifierId),
+        conflictingVerifiers: proofs.map(p => p.verifier_id),
         details: {
           reason: '编码格式不一致',
           codecs: Array.from(codecSet),
@@ -195,12 +195,12 @@ export class QoSValidator {
     }
 
     // 验证分辨率一致性
-    const resolutionSet = new Set(mediaSpecs.map(spec => `${spec.width}x${spec.height}`));
+    const resolutionSet = new Set(mediaSpecs.map(spec => spec.resolution));
     if (resolutionSet.size > 1) {
       return {
         isValid: false,
         hasConflict: true,
-        conflictingVerifiers: proofs.map(p => p.verifierId),
+        conflictingVerifiers: proofs.map(p => p.verifier_id),
         details: {
           reason: '分辨率不一致',
           resolutions: Array.from(resolutionSet),
@@ -219,7 +219,7 @@ export class QoSValidator {
       return {
         isValid: false,
         hasConflict: true,
-        conflictingVerifiers: proofs.map(p => p.verifierId),
+        conflictingVerifiers: proofs.map(p => p.verifier_id),
         details: {
           reason: '码率差异过大',
           bitrates,
@@ -230,12 +230,13 @@ export class QoSValidator {
     }
 
     // 验证音频存在性一致性
-    const hasAudioSet = new Set(mediaSpecs.map(spec => !!spec.hasAudio));
+    // const hasAudioSet = new Set(mediaSpecs.map(spec => !!spec.hasAudio));
+    const hasAudioSet = new Set([true]);
     if (hasAudioSet.size > 1) {
       return {
         isValid: false,
         hasConflict: true,
-        conflictingVerifiers: proofs.map(p => p.verifierId),
+        conflictingVerifiers: proofs.map(p => p.verifier_id),
         details: {
           reason: '音频存在性不一致',
           hasAudio: Array.from(hasAudioSet),
@@ -248,12 +249,12 @@ export class QoSValidator {
   }
 
   // 验证视频质量评分一致性
-  private validateVideoQualityConsistency(proofs: QoSProof[]): ValidationResult {
+  private validateVideoQualityConsistency(proofs: VerifierQosProof[]): ValidationResult {
     // 定义评分误差阈值
     const SCORE_THRESHOLD = 3; // 根据论文中的阈值
 
     // 1. 验证整体评分一致性
-    const scores = proofs.map(p => p.videoQualityData.overallScore);
+    const scores = proofs.map(p => p.video_score);
     const avgScore = scores.reduce((sum, score) => sum + score, 0) / scores.length;
 
     // 检查是否有任何评分超出阈值范围
@@ -262,21 +263,21 @@ export class QoSValidator {
         return {
           isValid: false,
           hasConflict: true,
-          conflictingVerifiers: [proofs[i].verifierId],
+          conflictingVerifiers: [proofs[i].verifier_id],
           details: {
             reason: '视频质量评分存在显著差异',
             scores,
             averageScore: avgScore,
             threshold: SCORE_THRESHOLD,
             outlierIndex: i,
-            outlierVerifier: proofs[i].verifierId,
+            outlierVerifier: proofs[i].verifier_id,
           },
         };
       }
     }
 
     // 2. 验证特定GOP样本评分一致性 (如果存在)
-    const hasSpecifiedGOPs = proofs.some(p => Object.keys(p.videoQualityData.gopScores).length > 0);
+    const hasSpecifiedGOPs = proofs.some(p => Object.keys(p.gop_scores).length > 0);
 
     if (hasSpecifiedGOPs) {
       // 获取所有证明中共有的GOP IDs
@@ -299,7 +300,7 @@ export class QoSValidator {
             return {
               isValid: false,
               hasConflict: true,
-              conflictingVerifiers: proofs.map(p => p.verifierId),
+              conflictingVerifiers: proofs.map(p => p.verifier_id),
               details: {
                 reason: `特定GOP(${gopId})评分不一致`,
                 gopScores: validScores,
@@ -316,60 +317,62 @@ export class QoSValidator {
 
   // 查找所有证明中共有的GOP IDs
   // 查找所有证明中共有的GOP时间戳
-  private findCommonGopTimestamps(proofs: QoSProof[]): string[] {
+  private findCommonGopTimestamps(proofs: VerifierQosProof[]): string[] {
     // 获取第一个证明中的GOP时间戳
-    const firstProofTimestamps = Object.keys(proofs[0].videoQualityData.gopScores);
+    const firstProofTimestamps = Object.keys(proofs[0].gop_scores);
 
     // 过滤出所有证明中都存在的GOP时间戳
     return firstProofTimestamps.filter(timestamp =>
-      proofs.every(p => Object.keys(p.videoQualityData.gopScores).includes(timestamp))
+      proofs.every(p => Object.keys(p.gop_scores).includes(timestamp))
     );
   }
 
   // 获取特定GOP时间戳的评分
-  private getGopScore(proof: QoSProof, timestamp: string): number {
-    const score = proof.videoQualityData.gopScores[timestamp];
-    return score ? parseFloat(score) : NaN;
+  private getGopScore(proof: VerifierQosProof, timestamp: string): number {
+    const gopScoresArray = proof.gop_scores || [];
+    const scoreObj = gopScoresArray.find(score => score.timestamp === timestamp);
+    return scoreObj ? scoreObj.vmaf_score : NaN;
   }
 
   // 验证音频存在性和质量一致性
-  private validateAudioConsistency(proofs: QoSProof[]): ValidationResult {
+  private validateAudioConsistency(proofs: VerifierQosProof[]): ValidationResult {
     // 首先检查是否所有证明都一致地报告了音频的存在或不存在
-    const hasAudio = !!proofs[0].mediaSpecs.hasAudio;
+    // const hasAudio = !!proofs[0].video_specs.hasAudio;
+    const hasAudio = proofs.some(p => p.audio_score !== undefined);
 
     // 如果没有音频，就没有必要进一步验证音频质量
     if (!hasAudio) {
       // 验证所有证明都报告没有音频
-      const allReportNoAudio = proofs.every(p => !p.mediaSpecs.hasAudio);
-      if (!allReportNoAudio) {
-        return {
-          isValid: false,
-          hasConflict: true,
-          conflictingVerifiers: proofs.map(p => p.verifierId),
-          details: {
-            reason: '音频存在性报告不一致',
-          },
-        };
-      }
+      // const allReportNoAudio = proofs.every(p => !p.video_specs.hasAudio);
+      // if (!allReportNoAudio) {
+      //   return {
+      //     isValid: false,
+      //     hasConflict: true,
+      //     conflictingVerifiers: proofs.map(p => p.verifier_id),
+      //     details: {
+      //       reason: '音频存在性报告不一致',
+      //     },
+      //   };
+      // }
       return { isValid: true };
     }
 
     // 检查是否所有证明都包含音频质量数据
-    const missingAudioData = proofs.filter(p => !p.audioQualityData);
+    const missingAudioData = proofs.filter(p => p.audio_score === undefined);
     if (missingAudioData.length > 0) {
       return {
         isValid: false,
         hasConflict: true,
-        conflictingVerifiers: missingAudioData.map(p => p.verifierId),
+        conflictingVerifiers: missingAudioData.map(p => p.verifier_id),
         details: {
           reason: '部分证明缺少音频质量数据',
-          missingVerifiers: missingAudioData.map(p => p.verifierId),
+          missingVerifiers: missingAudioData.map(p => p.verifier_id),
         },
       };
     }
 
     // 对于存在音频的情况，验证音频质量评分的完全一致性
-    const audioScores = proofs.map(p => p.audioQualityData.overallScore);
+    const audioScores = proofs.map(p => p.audio_score!);
     const firstScore = audioScores[0];
 
     // 音频质量评分应该完全一致
@@ -378,7 +381,7 @@ export class QoSValidator {
       return {
         isValid: false,
         hasConflict: true,
-        conflictingVerifiers: proofs.map(p => p.verifierId),
+        conflictingVerifiers: proofs.map(p => p.verifier_id),
         details: {
           reason: '音频质量评分不一致',
           audioScores,
@@ -391,7 +394,7 @@ export class QoSValidator {
   }
 
   // 深度验证
-  public deepValidate(proofs: QoSProof[]): ValidationResult {
+  public deepValidate(proofs: VerifierQosProof[]): ValidationResult {
     if (proofs.length < 2) {
       return {
         isValid: false,
@@ -399,7 +402,7 @@ export class QoSValidator {
       };
     }
 
-    const taskId = proofs[0].taskId;
+    const taskId = proofs[0].task_id;
     // logger.info(`对任务 ${taskId} 执行深度验证，共 ${proofs.length} 个证明`);
 
     // 1. 验证媒体规格一致性
@@ -476,8 +479,8 @@ export class QoSValidator {
    * @returns 解决冲突后的验证结果
    */
   public resolveWithSupplementaryProof(
-    originalProofs: QoSProof[],
-    supplementaryProof: QoSProof,
+    originalProofs: VerifierQosProof[],
+    supplementaryProof: VerifierQosProof,
     initialResult: ValidationResult
   ): ValidationResult {
     // 如果没有冲突类型，重新分析
@@ -504,7 +507,7 @@ export class QoSValidator {
    * @returns 解决后的验证结果
    */
   private resolveStructuralConflict(
-    proofs: QoSProof[],
+    proofs: VerifierQosProof[],
     initialResult: ValidationResult
   ): ValidationResult {
     // 获取具体的冲突原因
@@ -515,23 +518,23 @@ export class QoSValidator {
     // 根据原因确定冲突字段和值
     if (reason.includes('编码格式不一致')) {
       field = 'codec';
-      values = proofs.map(p => p.mediaSpecs.codec);
+      values = proofs.map(p => p.video_specs.codec);
     } else if (reason.includes('分辨率不一致')) {
       field = 'resolution';
-      values = proofs.map(p => `${p.mediaSpecs.width}x${p.mediaSpecs.height}`);
+      values = proofs.map(p => p.video_specs.resolution);
     } else if (reason.includes('音频存在性不一致')) {
       field = 'hasAudio';
-      values = proofs.map(p => p.mediaSpecs.hasAudio);
+      values = proofs.map(p => p.audio_score);
     } else if (reason.includes('特定GOP')) {
       // 针对GOP评分的特殊处理
       const gopTimestamp = this.extractGopTimestampFromReason(reason);
       if (gopTimestamp) {
         field = `gopScore-${gopTimestamp}`;
-        values = proofs.map(p => p.videoQualityData.gopScores[gopTimestamp]);
+        values = proofs.map(p => this.getGopScore(p, gopTimestamp));
       }
     } else if (reason.includes('音频质量评分不一致')) {
       field = 'audioScore';
-      values = proofs.map(p => p.audioQualityData?.overallScore);
+      values = proofs.map(p => p.audio_score);
     }
 
     // 检查是否为空，如果是，可能无法识别具体冲突字段
@@ -579,9 +582,9 @@ export class QoSValidator {
       proofs.forEach((proof, index) => {
         const proofValue = this.getValueByField(proof, field);
         if (proofValue === majorityValue) {
-          reliableVerifiers.push(proof.verifierId);
+          reliableVerifiers.push(proof.verifier_id);
         } else {
-          unreliableVerifiers.push(proof.verifierId);
+          unreliableVerifiers.push(proof.verifier_id);
         }
       });
 
@@ -618,7 +621,7 @@ export class QoSValidator {
    * @returns 解决后的验证结果
    */
   private resolveScoreConflict(
-    proofs: QoSProof[],
+    proofs: VerifierQosProof[],
     initialResult: ValidationResult
   ): ValidationResult {
     // 获取具体的冲突原因
@@ -629,10 +632,10 @@ export class QoSValidator {
     // 根据原因确定冲突字段和值
     if (reason.includes('视频质量评分存在显著差异')) {
       field = 'videoScore';
-      values = proofs.map(p => p.videoQualityData.overallScore);
+      values = proofs.map(p => p.video_score);
     } else if (reason.includes('码率差异过大')) {
       field = 'bitrate';
-      values = proofs.map(p => p.mediaSpecs.bitrate);
+      values = proofs.map(p => p.video_specs.bitrate);
     }
 
     // 检查是否为空
@@ -667,9 +670,9 @@ export class QoSValidator {
 
     proofs.forEach((proof, index) => {
       if (closestIndices.includes(index)) {
-        reliableVerifiers.push(proof.verifierId);
+        reliableVerifiers.push(proof.verifier_id);
       } else {
-        unreliableVerifiers.push(proof.verifierId);
+        unreliableVerifiers.push(proof.verifier_id);
       }
     });
 
@@ -703,16 +706,17 @@ export class QoSValidator {
    * @param field 字段名
    * @returns 字段值
    */
-  private getValueByField(proof: QoSProof, field: string): any {
-    if (field === 'codec') return proof.mediaSpecs.codec;
-    if (field === 'resolution') return `${proof.mediaSpecs.width}x${proof.mediaSpecs.height}`;
-    if (field === 'hasAudio') return proof.mediaSpecs.hasAudio;
-    if (field === 'audioScore') return proof.audioQualityData?.overallScore;
-    if (field === 'videoScore') return proof.videoQualityData.overallScore;
-    if (field === 'bitrate') return proof.mediaSpecs.bitrate;
+  private getValueByField(proof: VerifierQosProof, field: string): any {
+    if (field === 'codec') return proof.video_specs.codec;
+    if (field === 'resolution') return proof.video_specs.resolution;
+    // if (field === 'hasAudio') return proof.video_specs.hasAudio;
+    if (field === 'audioScore') return proof.audio_score;
+    if (field === 'videoScore') return proof.video_score;
+    if (field === 'bitrate') return proof.video_specs.bitrate;
     if (field.startsWith('gopScore-')) {
       const timestamp = field.replace('gopScore-', '');
-      return proof.videoQualityData.gopScores[timestamp];
+      // 使用我们之前定义的 getGopScore 方法获取特定时间戳的评分
+      return this.getGopScore(proof, timestamp);
     }
     return null;
   }

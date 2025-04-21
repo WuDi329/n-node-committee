@@ -141,7 +141,7 @@ export interface QoSProof {
   videoQualityData: {
     // 视频质量数据
     overallScore: number; // 总体评分
-    gopScores: { [timestamp: string]: string };
+    gopScores: GopScore[];
     // 其他可能的视频质量字段
   };
   audioQualityData?: any; // 音频质量数据（可选）
@@ -362,17 +362,30 @@ export interface ConsensusQosProof {
 }
 
 export enum GopVerificationResult {
-  Verified = 'Verified', // GOP验证通过
-  ScoreMismatch = 'ScoreMismatch', // 分数不匹配
-  GopMismatch = 'GopMismatch', // GOP结构不匹配
-  UndeterminedError = 'UndeterminedError', // 未确定错误
+  Verified = 'Verified',
+  ScoreMismatch = 'ScoreMismatch',
+  GopMismatch = 'GopMismatch',
+  UndeterminedError = 'UndeterminedError',
 }
 
+// export enum GopVerificationResult {
+//   Verified = 0, // 已验证
+//   ScoreMismatch = 1, // 分数不匹配
+//   GopMismatch = 2, // GOP不匹配
+//   UndeterminedError = 3, // 无法确定错误
+// }
+
+// export enum QosProofStatus {
+//   Pending = 0, // 待处理
+//   Normal = 1, // 正常
+//   Conflict = 2, // 冲突
+//   Manual = 3, // 人工审核
+// }
 export enum QosProofStatus {
-  Pending = 'Pending', // 等待通过
-  Normal = 'Normal', // 普通验证通过
-  Conflict = 'Conflict', // 经过补充验证通过
-  Manual = 'Manual', // 经过人工验证通过
+  Pending = 'Pending',
+  Normal = 'Normal',
+  Conflict = 'Conflict',
+  Manual = 'Manual',
 }
 
 // committee相关配置

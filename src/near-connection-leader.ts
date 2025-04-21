@@ -203,16 +203,12 @@ export class NearConnectionLeader {
   /**
    * 提交共识结果
    */
-  async submitConsensusProof(
-    proof: ConsensusQosProof,
-    proofStatus: QosProofStatus
-  ): Promise<boolean> {
+  async submitConsensusProof(proof: ConsensusQosProof): Promise<boolean> {
     try {
       const result = await this.contract.submit_consensus_proof({
         proof,
-        proof_status: proofStatus,
       });
-      logger.info(`成功提交任务 ${proof.task_id} 的共识结果，状态: ${proofStatus}`);
+      logger.info(`成功提交任务 ${proof.task_id} 的共识结果，状态: ${proof.status}`);
       return result;
     } catch (error) {
       logger.error(`提交任务 ${proof.task_id} 的共识结果失败: ${error}`);
