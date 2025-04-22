@@ -1,12 +1,12 @@
 // src/utils/proof-utils.ts
 
-import { QoSProof } from '../models/types';
+import { QoSProof, VerifierQosProof } from '../models/types';
 
 // 生成测试证明
-export function generateTestProof(taskId: string, verifierId: string): QoSProof {
+export function generateTestProof(taskId: string, verifierId: string): VerifierQosProof {
   return {
-    taskId,
-    verifierId,
+    task_id: taskId,
+    verifier_id: verifierId,
     timestamp: Date.now(),
     mediaSpecs: {
       codec: 'H.264',
@@ -18,9 +18,9 @@ export function generateTestProof(taskId: string, verifierId: string): QoSProof 
     videoQualityData: {
       overallScore: 85,
       gopScores: {
-        '0': '87.5',
-        '1000': '86.2',
-        '2000': '84.8',
+        timestamp: '0',
+        vmaf_score: 0.0,
+        hash: '',
       },
     },
     audioQualityData: {

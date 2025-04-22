@@ -1514,6 +1514,18 @@ export class CommitteeNode {
     return { average, scores };
   }
 
+  /**
+   * 将纳秒转换为毫秒
+   * @param nanoseconds 纳秒时间戳
+   * @returns 毫秒时间戳
+   */
+  private convertNanoToMilliseconds(nanoseconds: number | undefined | null): number {
+    // 如果输入是undefined或null，则返回0
+    const nanos = nanoseconds || 0;
+    // 纳秒转换为毫秒 (1毫秒 = 1,000,000纳秒)
+    return Math.floor(nanos / 1_000_000);
+  }
+
   // 构造共识证明对象
   private constructConsensusProof(
     taskId: string,
@@ -1541,8 +1553,8 @@ export class CommitteeNode {
       audio_score: this.getAverageAudioScore(taskId),
       sync_score: this.getAverageSyncScore(taskId),
 
-      encoding_start_time: task.assignment_time || 0,
-      encoding_end_time: task.completion_time || 0,
+      encoding_start_time: this.convertNanoToMilliseconds(task.assignment_time),
+      encoding_end_time: this.convertNanoToMilliseconds(task.completion_time),
       video_specs: proof.video_specs,
       frame_count: task.frame_count || 0,
 
