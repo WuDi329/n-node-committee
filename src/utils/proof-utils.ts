@@ -1,35 +1,29 @@
 // src/utils/proof-utils.ts
 
-import { QoSProof, VerifierQosProof } from '../models/types';
+import { GopScore, QoSProof, VerifierQosProof } from '../models/types';
 
 // 生成测试证明
 export function generateTestProof(taskId: string, verifierId: string): VerifierQosProof {
+  let gopexample: GopScore = {
+    timestamp: '0.00',
+    vmaf_score: 92,
+    hash: 'aivoianvioahnvoavboaiu',
+  };
   return {
+    id: 'lalal1',
+    gop_scores: [gopexample],
     task_id: taskId,
     verifier_id: verifierId,
     timestamp: Date.now(),
-    mediaSpecs: {
+    video_specs: {
       codec: 'H.264',
-      width: 1920,
-      height: 1080,
+      resolution: '1920x1080',
       bitrate: 5000,
-      hasAudio: true,
+      framerate: 30,
     },
-    videoQualityData: {
-      overallScore: 85,
-      gopScores: {
-        timestamp: '0',
-        vmaf_score: 0.0,
-        hash: '',
-      },
-    },
-    audioQualityData: {
-      overallScore: 92,
-    },
-    syncQualityData: {
-      offset: 0.02,
-      score: 98,
-    },
+    video_score: 92,
+    audio_score: 4.3,
+    sync_score: 0.0,
     signature: 'test-signature-' + verifierId,
   };
 }
@@ -39,13 +33,13 @@ export function generateConflictingProof(
   taskId: string,
   verifierId: string,
   conflictType: 'codec' | 'score'
-): QoSProof {
+): VerifierQosProof {
   const proof = generateTestProof(taskId, verifierId);
 
   if (conflictType === 'codec') {
-    proof.mediaSpecs.codec = 'H.265'; // 不同的编码格式
+    proof.video_specs.codec = 'H.265'; // 不同的编码格式
   } else if (conflictType === 'score') {
-    proof.videoQualityData.overallScore = 76; // 相差超过阈值
+    proof.video_score = 76; // 相差超过阈值
   }
 
   return proof;
