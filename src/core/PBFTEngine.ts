@@ -454,6 +454,9 @@ export class PBFTEngine {
         `节点 ${this.nodeId} 已将自己的Commit消息添加到列表中，当前有 ${this.commitMessages.get(key)!.length} 条Commit消息`
       );
 
+      // 添加这一行 - 检查是否已经收到足够的commit消息
+      this.checkCommitConsensus(key);
+
       return commitMsg;
     }
 
@@ -495,6 +498,7 @@ export class PBFTEngine {
 
   // 处理Commit消息
   public handleCommit(message: PBFTMessage): void {
+    console.log('进入handleCommit');
     // console.warn(`${this.nodeId}进入handleCommit`);
     if (!this.validateMessage(message)) {
       return;
@@ -525,7 +529,8 @@ export class PBFTEngine {
       this.commitMessages.set(key, []);
     }
 
-    if (message.nodeId === this.nodeId && this.commitMessages.get(key)!.length === 1) {
+    // 在handleCommit方法中，修改条件判断
+    if (this.state === ConsensusState.Prepared && this.pendingCommitMessages.has(key)) {
       const pendingCommitMessages = this.pendingCommitMessages.get(key) || [];
 
       // 清空待处理消息队列
@@ -543,6 +548,9 @@ export class PBFTEngine {
             this.commitMessages.get(key)!.push(pendingMsg);
           }
         }
+
+        // 添加这一行 - 处理完pending消息后再次检查是否达到共识
+        this.checkCommitConsensus(key);
       }
     }
 

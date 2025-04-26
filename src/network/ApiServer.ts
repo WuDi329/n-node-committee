@@ -81,7 +81,7 @@ export class ApiServer {
         // }
 
         logger.info(
-          `${this.committeeNode.getNodeId()}的APIServer接收到任务ID ${proof.taskId} 的QoS证明提交`
+          `${this.committeeNode.getNodeId()}的APIServer接收到任务ID ${proof.task_id} 的QoS证明提交`
         );
 
         // 响应客户端

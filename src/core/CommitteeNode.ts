@@ -1621,55 +1621,34 @@ export class CommitteeNode {
     const taskId = proof.task_id;
     logger.info(`节点 ${this.nodeId} 达成共识: 任务ID ${taskId}`);
 
-    console.warn(`${this.nodeId} 视角下 inside onConsensusReached，当前时间${Date.now()}`);
-
-    console.log('proof');
-    console.log(proof);
-
-    // 只有Leader节点执行区块链交互
-    if (this.isLeader && this.nearConnection) {
-      if (consensusType === ConsensusType.Conflict) {
-        // 处理冲突共识
-        await this.handleConflictConsensusReached(taskId);
-      } else {
-        // 处理正常共识，提交结果到区块链
-        await this.submitConsensusToBlockchain(taskId, proof, QosProofStatus.Normal);
-      }
-    }
-
-    // TODO: 在此处添加上链或其他后处理逻辑
-    // 例如：调用智能合约将结果存储在区块链上
-    console.log(`${taskId}的共识类型是${consensusType}`);
-
+    // 所有节点都需要更新任务状态
     if (consensusType === ConsensusType.Conflict) {
-      // 处理冲突共识
-      this.handleConflictConsensusReached(taskId);
+      const status = this.taskStatuses.get(taskId);
+      if (status) {
+        // 所有节点都更新状态为等待补充验证
+        status.state = TaskProcessingState.AwaitingSupplementary;
+        status.updatedAt = new Date().toISOString();
+        this.taskStatuses.set(taskId, status);
+        logger.info(`节点 ${this.nodeId}: 任务 ${taskId} 进入等待补充验证状态`);
+      }
+
+      // 只有Leader执行区块链交互
+      if (this.isLeader && this.nearConnection) {
+        await this.handleConflictConsensusReached(taskId);
+      }
     } else {
-      // 处理正常共识
+      // 正常共识的处理
       const status = this.taskStatuses.get(taskId);
       if (status) {
         status.state = TaskProcessingState.Finalized;
         status.updatedAt = new Date().toISOString();
-        if (!status.result) {
-          status.result = {};
-        }
-        status.result.consensusTimestamp = new Date().toISOString();
-        const metricsCollector = GlobalMetricsCollector.getInstance();
-        metricsCollector.recordConsensusEvent({
-          taskId: taskId,
-          nodeId: this.nodeId,
-          eventType: EventType.CONSENSUS_REACH_NORMAL,
-          timestamp: Date.now(),
-          // ConsensusResult 到底应该是啥等待填补
-          ConsensusResult: {},
-          // metadata: { verifierId: proof.verifierId },
-        });
         this.taskStatuses.set(taskId, status);
       }
 
-      // TODO: 调用智能合约将结果上链
-
-      logger.info(`共识结果已处理: ${calculateHash(proof)}`);
+      // 只有Leader执行区块链交互
+      if (this.isLeader && this.nearConnection) {
+        await this.submitConsensusToBlockchain(taskId, proof, QosProofStatus.Normal);
+      }
     }
 
     // 从队列中移除当前任务
@@ -1696,28 +1675,12 @@ export class CommitteeNode {
       return;
     }
 
-    // 记录事件
-    const metricsCollector = GlobalMetricsCollector.getInstance();
-    metricsCollector.recordConsensusEvent({
-      taskId: taskId,
-      nodeId: this.nodeId,
-      eventType: EventType.CONSENSUS_REACH_CONFLICT,
-      timestamp: Date.now(),
-      ConsensusResult: {},
-    });
-
-    // 更新任务状态为等待补充验证
-    status.state = TaskProcessingState.AwaitingSupplementary;
-    status.updatedAt = new Date().toISOString();
-    this.taskStatuses.set(taskId, status);
-
-    logger.info(`任务 ${taskId} 进入等待补充验证状态`);
-
     try {
       // 请求补充验证者
       const supplementalVerifierId = await this.nearConnection.requestSupplementalVerifier(taskId);
 
       if (supplementalVerifierId) {
+        console.log('inside  onConsensusReached');
         logger.info(`成功为任务 ${taskId} 请求补充验证者: ${supplementalVerifierId}`);
 
         // 更新任务状态，记录补充验证者信息

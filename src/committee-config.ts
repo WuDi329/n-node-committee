@@ -9,7 +9,7 @@ const config: CommitteeConfig = {
     helperUrl: 'https://helper.testnet.near.org',
     explorerUrl: 'https://explorer.testnet.near.org',
   },
-  contractId: 'pococontract11.testnet', // 转码服务合约ID
+  contractId: 'pococontract13.testnet', // 转码服务合约ID
   leaderAccountId: 'pocoleader.testnet', // 委员会Leader账户ID
   credentialsPath: '~/.near-credentials', // NEAR凭证路径
   ipfsConfig: {
