@@ -1412,7 +1412,7 @@ export class CommitteeNode {
     const gopScores = originalGopScores.map(score => ({
       timestamp: score.timestamp,
       // @ts-ignore
-      vmaf_score: score.vmafResult || score.vmafScore || 0, // 将vmafResult转换为vmaf_score
+      vmaf_score: score.vmaf_score || 0, // 将vmafResult转换为vmaf_score
       hash: score.hash || '',
     }));
 
@@ -1533,7 +1533,7 @@ export class CommitteeNode {
     task: TaskData
   ): ConsensusQosProof {
     const videoScores = this.getVideoScores(taskId);
-    console.log('audio_score');
+    // console.log('audio_score');
     console.log(videoScores);
     const gopsResults = this.getVerificationResults(taskId);
     console.log('gopsResults.gopScores');

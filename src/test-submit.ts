@@ -5,7 +5,7 @@ const config = require('./committee-config').default;
 // 配置对象
 // const config = {
 //   leaderAccountId: 'pocoleader.testnet',
-//   contractId: 'pococontract11.testnet',
+//   contractId: 'pococontract13.testnet',
 //   proxyUrl: 'http://127.0.0.1:7890', // 根据您的实际代理地址修改
 //   nearConfig: {
 //     networkId: 'testnet',
